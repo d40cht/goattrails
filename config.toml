@@ -12,3 +12,9 @@ route_candidates_to_generate = 10
 
 # The number of top routes to display on the map (Y).
 top_routes_to_display = 3
+
+# Optional fixed starting point for route generation.
+# If commented out, a random parking location will be used.
+[start_point]
+lat = 51.774716
+lon = -1.311914

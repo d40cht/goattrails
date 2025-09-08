@@ -82,13 +82,12 @@ pub fn generate_route(
 
             let original_segment_dist = calculate_route_properties(graph, &current_route.nodes[segment_start_idx..=segment_end_idx]).0;
 
-            let used_way_ids: HashSet<i64> = current_route.nodes
-                .windows(2)
-                .filter_map(|nodes| graph.find_edge(nodes[0], nodes[1]))
-                .map(|edge_ref| graph[edge_ref].original_way_id)
-                .collect();
+            let mut forbidden_segment_ids = HashSet::new();
+            if let Some(edge_to_replace) = graph.find_edge(u, v) {
+                forbidden_segment_ids.insert(graph[edge_to_replace].segment_id);
+            }
 
-            if let Some((new_path_nodes, (new_dist, new_ascent))) = find_alternative_path(graph, u, v, original_segment_dist, &used_way_ids) {
+            if let Some((new_path_nodes, (new_dist, new_ascent))) = find_alternative_path(graph, u, v, original_segment_dist, &forbidden_segment_ids) {
 
                 let mut potential_new_route_nodes = current_route.nodes.clone();
                 potential_new_route_nodes.splice(segment_start_idx..=segment_end_idx, new_path_nodes);
@@ -130,7 +129,7 @@ fn find_alternative_path(
     start: NodeIndex,
     end: NodeIndex,
     original_distance: f64,
-    used_way_ids: &HashSet<i64>,
+    forbidden_segment_ids: &HashSet<u32>,
 ) -> Option<(Vec<NodeIndex>, (f64, f64))> {
     let max_distance = original_distance * 4.0 + 1000.0;
     let end_point = graph[end];
@@ -140,7 +139,7 @@ fn find_alternative_path(
         start,
         |finish| finish == end,
         |e| {
-            if used_way_ids.contains(&e.weight().original_way_id) {
+            if forbidden_segment_ids.contains(&e.weight().segment_id) {
                 return f64::INFINITY;
             }
             let weight = e.weight();

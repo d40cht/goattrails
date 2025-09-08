@@ -17,11 +17,18 @@ pub mod map_exporter;
 pub mod route_generator;
 
 #[derive(Deserialize)]
+struct PointConfig {
+    lat: f64,
+    lon: f64,
+}
+
+#[derive(Deserialize)]
 struct Config {
     target_distance_km: f64,
     algorithm_iterations: usize,
     route_candidates_to_generate: usize,
     top_routes_to_display: usize,
+    start_point: Option<PointConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -32,7 +39,7 @@ pub struct Point {
 
 #[derive(Debug, Clone)]
 pub struct EdgeData {
-    pub original_way_id: i64,
+    pub segment_id: u32,
     pub path: Vec<Point>,
     pub distance: f64,
     pub ascent: f64,
@@ -189,6 +196,7 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
         }
     }
 
+    let mut segment_id_counter = 0u32;
     let reader4 = ElementReader::from_path(osm_path)?;
     reader4.for_each(|element| {
         if let Element::Way(way) = element {
@@ -202,7 +210,17 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
                         if let Some(last_id) = last_intersection_node_id {
                             let start_idx = *osm_id_to_node_index.get(&last_id).unwrap();
                             let end_idx = *osm_id_to_node_index.get(&node_id).unwrap();
-                            graph.add_edge(start_idx, end_idx, EdgeData { original_way_id: way.id(), path: current_path_segment.clone(), distance: 0.0, ascent: 0.0, descent: 0.0 });
+
+                            let forward_edge = EdgeData { segment_id: segment_id_counter, path: current_path_segment.clone(), distance: 0.0, ascent: 0.0, descent: 0.0 };
+
+                            let mut reversed_path = current_path_segment.clone();
+                            reversed_path.reverse();
+                            let reverse_edge = EdgeData { segment_id: segment_id_counter, path: reversed_path, distance: 0.0, ascent: 0.0, descent: 0.0 };
+
+                            graph.add_edge(start_idx, end_idx, forward_edge);
+                            graph.add_edge(end_idx, start_idx, reverse_edge);
+
+                            segment_id_counter += 1;
                         }
                         last_intersection_node_id = Some(node_id);
                         current_path_segment = vec![*point];
@@ -261,27 +279,21 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
         edge.descent = descent;
     }
 
-    println!("Adding reverse edges...");
-    let mut reverse_edges = Vec::new();
+    // The reverse edges were created with ascent/descent as 0.0, now we need to fix them.
+    let mut edges_to_update = Vec::new();
     for edge_ref in graph.edge_references() {
-        let source = edge_ref.source();
-        let target = edge_ref.target();
-        let weight = edge_ref.weight();
-
-        let mut reversed_path = weight.path.clone();
-        reversed_path.reverse();
-
-        reverse_edges.push((target, source, EdgeData {
-            original_way_id: weight.original_way_id,
-            path: reversed_path,
-            distance: weight.distance,
-            ascent: weight.descent,
-            descent: weight.ascent,
-        }));
+        if let Some(reverse_edge_index) = graph.find_edge(edge_ref.target(), edge_ref.source()) {
+            if graph[reverse_edge_index].ascent == 0.0 && graph[reverse_edge_index].descent == 0.0 {
+                let forward_weight = edge_ref.weight();
+                edges_to_update.push((reverse_edge_index, forward_weight.descent, forward_weight.ascent));
+            }
+        }
     }
-
-    for (source, target, data) in reverse_edges {
-        graph.add_edge(source, target, data);
+    for (edge_index, ascent, descent) in edges_to_update {
+        if let Some(edge_weight) = graph.edge_weight_mut(edge_index) {
+            edge_weight.ascent = ascent;
+            edge_weight.descent = descent;
+        }
     }
 
     println!("Graph build complete. Final graph has {} nodes and {} edges.", graph.node_count(), graph.edge_count());
@@ -312,12 +324,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let mut rng = rand::thread_rng();
-    let random_parking_spot = parking_locations.choose(&mut rng).unwrap();
+    let start_point;
+    if let Some(sp_config) = config.start_point {
+        println!("\nUsing configured start point: ({:.4}, {:.4})", sp_config.lat, sp_config.lon);
+        start_point = Point { lat: sp_config.lat, lon: sp_config.lon };
+    } else {
+        println!("\nNo start point configured. Selecting a random parking location...");
+        let mut rng = rand::thread_rng();
+        let random_parking_spot = parking_locations.choose(&mut rng).unwrap();
+        println!("Selected random starting point near: ({:.4}, {:.4})", random_parking_spot.lat, random_parking_spot.lon);
+        start_point = *random_parking_spot;
+    }
 
-    println!("\nSelected random starting point near: ({:.4}, {:.4})", random_parking_spot.lat, random_parking_spot.lon);
-
-    if let Some(start_node) = find_nearest_node(&graph, random_parking_spot) {
+    if let Some(start_node) = find_nearest_node(&graph, &start_point) {
         println!("Found nearest graph node to start route generation.");
 
         let mut generated_routes = Vec::new();
@@ -350,10 +369,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             let total_dist: f64 = route.iter().map(|e| e.distance).sum();
             let total_ascent: f64 = route.iter().map(|e| e.ascent).sum();
             println!("\nRoute #{}: Distance = {:.2}km, Ascent = {:.2}m", i + 1, total_dist / 1000.0, total_ascent);
-            println!("{:<15} | {:<12} | {:<10} | {:<10}", "Way ID", "Distance (m)", "Ascent (m)", "Descent (m)");
+            println!("{:<15} | {:<12} | {:<10} | {:<10}", "Segment ID", "Distance (m)", "Ascent (m)", "Descent (m)");
             println!("{:-<16}|{:-<14}|{:-<12}|{:-<12}", "", "", "", "");
             for segment in route {
-                println!("{:<15} | {:<12.2} | {:<10.2} | {:<10.2}", segment.original_way_id, segment.distance, segment.ascent, segment.descent);
+                println!("{:<15} | {:<12.2} | {:<10.2} | {:<10.2}", segment.segment_id, segment.distance, segment.ascent, segment.descent);
             }
         }
 
