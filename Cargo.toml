@@ -4,5 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+geotiff = "0.1.0"
+geo = "0.31.0"
 osmpbf = "0.3.6"
 petgraph = "0.8.2"
+tiff = "0.9"
+ndarray = "0.15"
