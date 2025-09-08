@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 osmpbf = "0.3.6"
+petgraph = "0.8.2"

@@ -1,4 +1,5 @@
 use osmpbf::{Element, ElementReader};
+use petgraph::graph::Graph;
 use std::collections::HashMap;
 use std::error::Error;
 
@@ -6,6 +7,11 @@ use std::error::Error;
 struct Point {
     lat: f64,
     lon: f64,
+}
+
+#[derive(Debug, Clone)]
+struct EdgeData {
+    path: Vec<Point>,
 }
 
 fn is_valid_way<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> bool {
@@ -84,12 +90,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     })?;
     println!("Pass 1 complete. Found {} nodes.", node_coords.len());
 
-    // --- Pass 2: Identify ways and find parking ---
-    println!("Starting pass 2: Processing ways and amenities...");
+    // --- Pass 2: Find parking amenities ---
+    println!("Starting pass 2: Finding parking locations...");
     let reader2 = ElementReader::from_path(path)?;
-    let mut ways = 0;
-    let mut valid_ways = 0;
-    let mut relations = 0;
     let mut parking_locations = Vec::new();
     let mut parking_nodes = 0;
     let mut parking_ways = 0;
@@ -120,11 +123,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         Element::Way(way) => {
-            ways += 1;
-            if is_valid_way(way.tags()) {
-                valid_ways += 1;
-            }
-
             if way
                 .tags()
                 .any(|(key, value)| key == "amenity" && value == "parking")
@@ -140,20 +138,90 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
         }
-        Element::Relation(_) => relations += 1,
+        _ => (),
     })?;
-
-    println!("
-Successfully parsed PBF file.");
-    println!("Total Nodes: {}", node_coords.len());
-    println!("Total Ways: {} ({} valid for routing)", ways, valid_ways);
-    println!("Total Relations: {}", relations);
     println!(
-        "Found {} parking locations ({} from nodes, {} from ways).",
+        "Pass 2 complete. Found {} parking locations ({} from nodes, {} from ways).",
         parking_locations.len(),
         parking_nodes,
         parking_ways
     );
+
+    // --- Pass 3: Count node references to find intersections ---
+    println!("Starting pass 3: Identifying intersections...");
+    let mut node_ref_counts = HashMap::new();
+    let reader3 = ElementReader::from_path(path)?;
+    reader3.for_each(|element| {
+        if let Element::Way(way) = element {
+            if is_valid_way(way.tags()) {
+                for node_id in way.refs() {
+                    *node_ref_counts.entry(node_id).or_insert(0) += 1;
+                }
+            }
+        }
+    })?;
+    let intersection_nodes: HashMap<_, _> = node_ref_counts
+        .into_iter()
+        .filter(|&(_, count)| count > 1)
+        .collect();
+    println!(
+        "Pass 3 complete. Found {} intersection nodes.",
+        intersection_nodes.len()
+    );
+
+    // --- Pass 4: Build the graph ---
+    println!("Starting pass 4: Building graph...");
+    let mut graph = Graph::<Point, EdgeData>::new();
+    let mut osm_id_to_node_index = HashMap::new();
+
+    // Add intersection nodes to the graph
+    for (osm_id, _) in &intersection_nodes {
+        if let Some(point) = node_coords.get(osm_id) {
+            let node_index = graph.add_node(*point);
+            osm_id_to_node_index.insert(*osm_id, node_index);
+        }
+    }
+
+    let reader4 = ElementReader::from_path(path)?;
+    let mut ways = 0;
+    let mut valid_ways = 0;
+
+    reader4.for_each(|element| {
+        if let Element::Way(way) = element {
+            ways += 1;
+            if is_valid_way(way.tags()) {
+                valid_ways += 1;
+                let mut last_intersection_node_id: Option<i64> = None;
+                let mut current_path_segment = Vec::new();
+
+                for node_id in way.refs() {
+                    let point = node_coords.get(&node_id).unwrap();
+                    current_path_segment.push(*point);
+
+                    if intersection_nodes.contains_key(&node_id) {
+                        if let Some(last_id) = last_intersection_node_id {
+                            let start_node_idx = osm_id_to_node_index.get(&last_id).unwrap();
+                            let end_node_idx = osm_id_to_node_index.get(&node_id).unwrap();
+
+                            graph.add_edge(
+                                *start_node_idx,
+                                *end_node_idx,
+                                EdgeData { path: current_path_segment.clone() },
+                            );
+                        }
+                        last_intersection_node_id = Some(node_id);
+                        current_path_segment = vec![*point];
+                    }
+                }
+            }
+        }
+    })?;
+
+    println!("Pass 4 complete.");
+    println!("\n--- Graph Construction Summary ---");
+    println!("Total Nodes in Graph: {}", graph.node_count());
+    println!("Total Edges in Graph: {}", graph.edge_count());
+    println!("Total Ways Scanned: {} ({} valid for routing)", ways, valid_ways);
 
     Ok(())
 }
