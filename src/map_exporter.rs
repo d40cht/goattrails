@@ -5,28 +5,6 @@ pub fn export_combined_map(
     parking_locations: &[Point],
     title: &str,
 ) -> String {
-    let colors = [
-        "red",
-        "blue",
-        "green",
-        "purple",
-        "orange",
-        "darkred",
-        "lightred",
-        "beige",
-        "darkblue",
-        "darkgreen",
-        "cadetblue",
-        "darkpurple",
-        "white",
-        "pink",
-        "lightblue",
-        "lightgreen",
-        "gray",
-        "black",
-        "lightgray",
-    ];
-
     let edge_polylines: Vec<String> = top_edges
         .iter()
         .enumerate()
@@ -37,7 +15,7 @@ pub fn export_combined_map(
                 .map(|p| format!("[{}, {}]", p.lat, p.lon))
                 .collect();
             let js_coordinates = format!("[{}]", coordinates.join(", "));
-            let color = colors[i % colors.len()];
+            let color = "red";
             let popup_content = format!(
                 "<b>Edge #{}</b><br>Distance: {:.2}m<br>Ascent: {:.2}m<br>Descent: {:.2}m",
                 i + 1,

@@ -358,12 +358,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     println!("Pass 5 complete.");
+    println!("Total distance: {}, total ascent: {}", total_distance, total_ascent);
 
-    println!("\n--- Top 20 Edges by Ascent ---");
+    println!("\n--- Top Edges by Ascent ---");
     let mut top_edges: Vec<_> = graph.edge_weights().cloned().collect();
     top_edges.sort_by(|a, b| {
-        b.ascent
-            .partial_cmp(&a.ascent)
+        let a_ascent = f64::max(a.ascent, a.descent);
+        let b_ascent = f64::max(b.ascent, b.descent);
+        b_ascent
+            .partial_cmp(&a_ascent)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
