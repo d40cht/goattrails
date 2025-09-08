@@ -20,11 +20,11 @@ pub struct Point {
 }
 
 #[derive(Debug, Clone)]
-struct EdgeData {
-    path: Vec<Point>,
-    distance: f64,
-    ascent: f64,
-    descent: f64,
+pub struct EdgeData {
+    pub path: Vec<Point>,
+    pub distance: f64,
+    pub ascent: f64,
+    pub descent: f64,
 }
 
 fn is_valid_way<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> bool {
@@ -305,21 +305,27 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut top_edges: Vec<_> = graph.edge_weights().cloned().collect();
     top_edges.sort_by(|a, b| b.ascent.partial_cmp(&a.ascent).unwrap_or(std::cmp::Ordering::Equal));
 
+    let top_20_edges: Vec<_> = top_edges.iter().take(20).cloned().collect();
+
     println!("{:<10} | {:<10} | {:<12} | {:<25}", "Ascent (m)", "Descent (m)", "Distance (m)", "Centroid (Lat, Lon)");
     println!("{:-<11}|{:-<12}|{:-<14}|{:-<26}", "", "", "", "");
-    for (i, edge) in top_edges.iter().take(20).enumerate() {
+    for edge in &top_20_edges {
         if let Some(center) = centroid(&edge.path) {
             println!(
                 "{:<10.2} | {:<10.2} | {:<12.2} | ({:.6}, {:.6})",
                 edge.ascent, edge.descent, edge.distance, center.lat, center.lon
             );
-
-            let html_content = map_exporter::export_to_html(&edge.path);
-            let filename = format!("top_edge_{}.html", i + 1);
-            fs::write(&filename, html_content)?;
-            println!("  -> Saved map to {}", filename);
         }
     }
+
+    // --- Pass 6: Generate combined map ---
+    println!("\n--- Generating Combined Map ---");
+    fs::create_dir_all("vis")?;
+    let map_title = "Top 20 Steepest Edges and Parking";
+    let html_content = map_exporter::export_combined_map(&top_20_edges, &parking_locations, map_title);
+    let filename = "vis/map.html";
+    fs::write(filename, html_content)?;
+    println!("-> Saved combined map to {}", filename);
 
     println!("\n--- Network Summary ---");
     println!("Total Network Distance: {:.2} km", total_distance / 1000.0);

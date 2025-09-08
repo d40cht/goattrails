@@ -1,36 +1,57 @@
-use crate::Point;
+use crate::{EdgeData, Point};
 
-pub fn export_to_html(path: &[Point]) -> String {
-    let coordinates: Vec<String> = path
+pub fn export_combined_map(
+    top_edges: &[EdgeData],
+    parking_locations: &[Point],
+    title: &str,
+) -> String {
+    let colors = ["red", "blue", "green", "purple", "orange", "darkred", "lightred", "beige", "darkblue", "darkgreen", "cadetblue", "darkpurple", "white", "pink", "lightblue", "lightgreen", "gray", "black", "lightgray"];
+
+    let edge_polylines: Vec<String> = top_edges
         .iter()
-        .map(|p| format!("[{}, {}]", p.lat, p.lon))
+        .enumerate()
+        .map(|(i, edge)| {
+            let coordinates: Vec<String> = edge
+                .path
+                .iter()
+                .map(|p| format!("[{}, {}]", p.lat, p.lon))
+                .collect();
+            let js_coordinates = format!("[{}]", coordinates.join(", "));
+            let color = colors[i % colors.len()];
+            let popup_content = format!(
+                "<b>Edge #{}</b><br>Distance: {:.2}m<br>Ascent: {:.2}m<br>Descent: {:.2}m",
+                i + 1, edge.distance, edge.ascent, edge.descent
+            );
+
+            format!(
+                "L.polyline({js_coordinates}, {{ color: '{color}' }}).bindPopup('{popup_content}')",
+                js_coordinates = js_coordinates,
+                color = color,
+                popup_content = popup_content
+            )
+        })
         .collect();
 
-    let js_coordinates = format!("[{}]", coordinates.join(", "));
+    let parking_markers: Vec<String> = parking_locations
+        .iter()
+        .map(|p| format!("L.marker([{}, {}]).bindPopup('Parking')", p.lat, p.lon))
+        .collect();
+
+    let all_layers = [edge_polylines, parking_markers].concat();
 
     format!(
         r#"
 <!DOCTYPE html>
 <html>
 <head>
-    <title>GoatTrails - Route Map</title>
-    <meta charset="utf-g">
+    <title>{title}</title>
+    <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"
-        integrity="sha512-xodZBNTC5n17Xt2atTPuE1HxjVMSvLVW9ocqUKLsCC5CXdbqCmblAshOMAS6/keqq/sMZMZ19scR4PsZChSR7A=="
-        crossorigin=""/>
-    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"
-        integrity="sha512-XQoYMqMTK8LvdxXYG3nZ448hOEQiglfqkJs1NOQV44cWnUrBc8PkAOcXy20w0vlaXaVUearIOBhiXZ5V3ynxwA=="
-        crossorigin=""></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
     <style>
-        html, body {{
-            height: 100%;
-            margin: 0;
-        }}
-        #map {{
-            width: 100%;
-            height: 100%;
-        }}
+        html, body {{ height: 100%; margin: 0; }}
+        #map {{ width: 100%; height: 100%; }}
     </style>
 </head>
 <body>
@@ -40,17 +61,32 @@ pub fn export_to_html(path: &[Point]) -> String {
 <script>
     var map = L.map('map');
 
-    L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+    var osm = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-    }}).addTo(map);
+    }});
 
-    var routeCoords = {js_coordinates};
+    var opentopo = L.tileLayer('https://{{s}}.tile.opentopomap.org/{{z}}/{{x}}/{{y}}.png', {{
+        attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, SRTM | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)'
+    }});
 
-    if (routeCoords.length > 0) {{
-        var polyline = L.polyline(routeCoords, {{color: 'red'}}).addTo(map);
-        map.fitBounds(polyline.getBounds());
+    opentopo.addTo(map);
+
+    var baseMaps = {{
+        "OpenStreetMap": osm,
+        "OpenTopoMap": opentopo
+    }};
+
+    L.control.layers(baseMaps).addTo(map);
+
+    var layers = [
+        {layers_script}
+    ];
+
+    var featureGroup = L.featureGroup(layers).addTo(map);
+
+    if (layers.length > 0) {{
+        map.fitBounds(featureGroup.getBounds().pad(0.1));
     }} else {{
-        // Default view if no coordinates
         map.setView([51.505, -0.09], 13);
     }}
 </script>
@@ -58,6 +94,7 @@ pub fn export_to_html(path: &[Point]) -> String {
 </body>
 </html>
 "#,
-        js_coordinates = js_coordinates
+        title = title,
+        layers_script = all_layers.join(",\n")
     )
 }
