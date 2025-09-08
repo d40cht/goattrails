@@ -101,13 +101,19 @@ pub fn export_combined_map(
 }
 
 pub fn export_route_map(route: &[EdgeData], title: &str) -> String {
-    let all_points: Vec<String> = route
+    let mut all_points: Vec<Point> = route
         .iter()
-        .flat_map(|edge| edge.path.iter())
+        .flat_map(|edge| edge.path.iter().copied())
+        .collect();
+
+    all_points.dedup();
+
+    let js_points: Vec<String> = all_points
+        .iter()
         .map(|p| format!("[{}, {}]", p.lat, p.lon))
         .collect();
 
-    let js_coordinates = format!("[{}]", all_points.join(", "));
+    let js_coordinates = format!("[{}]", js_points.join(", "));
     let route_polyline = format!("L.polyline({js_coordinates}, {{ color: 'blue' }})");
 
     format!(

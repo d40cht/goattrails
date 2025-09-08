@@ -1,15 +1,24 @@
 use crate::{EdgeData, Point, RouteGraph};
-use petgraph::graph::NodeIndex;
+use petgraph::graph::{NodeIndex, EdgeIndex};
 use petgraph::algo::astar;
 use petgraph::visit::EdgeRef;
 use rand::Rng;
+use rand::seq::SliceRandom;
 use geo::HaversineDistance;
+use std::collections::HashSet;
 
-// Represents the current route state
 struct Route {
     nodes: Vec<NodeIndex>,
     distance: f64,
     ascent: f64,
+}
+
+#[derive(Clone)]
+struct CandidateExpansion {
+    nodes: Vec<NodeIndex>,
+    distance: f64,
+    ascent: f64,
+    score: f64,
 }
 
 fn find_nearest_neighbor(graph: &RouteGraph, start_node: NodeIndex) -> Option<NodeIndex> {
@@ -25,12 +34,12 @@ pub fn generate_route(
     iteration_limit: usize,
 ) -> Option<Vec<EdgeData>> {
     let mut rng = rand::thread_rng();
+    const N_CANDIDATES: usize = 10;
+    const M_TOP_CANDIDATES: usize = 3;
 
-    // --- Create the initial seed loop ---
     let initial_route_nodes = if let Some(neighbor) = find_nearest_neighbor(graph, start_node) {
         vec![start_node, neighbor, start_node]
     } else {
-        println!("Could not find a neighbor for the start node. Cannot generate a route.");
         return None;
     };
 
@@ -41,55 +50,73 @@ pub fn generate_route(
         ascent: initial_ascent,
     };
 
-    println!("Starting route generation from node {:?}. Initial loop distance: {:.2}m", start_node, current_route.distance);
+    let mut used_edges: HashSet<EdgeIndex> = HashSet::new();
+    update_used_edges(graph, &current_route.nodes, &mut used_edges);
+
+    println!("Starting route generation. Initial loop distance: {:.2}m", current_route.distance);
 
     for i in 0..iteration_limit {
         if current_route.distance >= target_distance {
-            println!("\nTarget distance of {:.2}km reached after {} iterations.", target_distance / 1000.0, i);
+            println!("\nTarget distance reached after {} iterations.", i);
             break;
         }
 
-        if current_route.nodes.len() < 2 {
-            println!("Route has less than 2 nodes, stopping.");
-            break;
+        let mut candidates: Vec<CandidateExpansion> = Vec::new();
+
+        for _ in 0..N_CANDIDATES {
+            if current_route.nodes.len() < 2 { continue; }
+
+            let segment_start_idx = rng.gen_range(0..current_route.nodes.len() - 1);
+            let segment_end_idx = segment_start_idx + 1;
+            let u = current_route.nodes[segment_start_idx];
+            let v = current_route.nodes[segment_end_idx];
+
+            if u == v { continue; }
+
+            let original_segment_dist = calculate_route_properties(graph, &current_route.nodes[segment_start_idx..=segment_end_idx]).0;
+
+            if let Some((new_path_nodes, (new_dist, new_ascent))) = find_alternative_path(graph, u, v, original_segment_dist, &used_edges) {
+
+                let mut potential_new_route_nodes = current_route.nodes.clone();
+                potential_new_route_nodes.splice(segment_start_idx..=segment_end_idx, new_path_nodes);
+
+                let (total_dist, total_ascent) = calculate_route_properties(graph, &potential_new_route_nodes);
+
+                let score = total_ascent;
+
+                candidates.push(CandidateExpansion {
+                    nodes: potential_new_route_nodes,
+                    distance: total_dist,
+                    ascent: total_ascent,
+                    score,
+                });
+            }
         }
 
-        // 1. Select a random segment to replace
-        let segment_start_idx = rng.gen_range(0..current_route.nodes.len() - 1);
-        let segment_end_idx = segment_start_idx + 1;
-        let u = current_route.nodes[segment_start_idx];
-        let v = current_route.nodes[segment_end_idx];
+        if candidates.is_empty() {
+            continue;
+        }
 
-        if u == v { continue; }
+        candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        let top_m = candidates.iter().take(M_TOP_CANDIDATES).collect::<Vec<_>>();
 
-        let (original_dist, original_ascent) = calculate_route_properties(graph, &current_route.nodes[segment_start_idx..=segment_end_idx]);
+        if let Some(chosen_candidate) = top_m.choose(&mut rng) {
+            current_route.nodes = chosen_candidate.nodes.clone();
+            current_route.distance = chosen_candidate.distance;
+            current_route.ascent = chosen_candidate.ascent;
 
-        // 2. Find an alternative path
-        if let Some((new_path_nodes, (new_dist, new_ascent))) = find_alternative_path(graph, u, v, original_dist) {
-            let original_ratio = if original_dist > 0.0 { original_ascent / original_dist } else { 0.0 };
-            let new_ratio = if new_dist > 0.0 { new_ascent / new_dist } else { 0.0 };
+            update_used_edges(graph, &current_route.nodes, &mut used_edges);
 
-            if new_ratio > original_ratio {
-                current_route.nodes.splice(segment_start_idx..=segment_end_idx, new_path_nodes);
-
-                let (total_dist, total_ascent) = calculate_route_properties(graph, &current_route.nodes);
-                current_route.distance = total_dist;
-                current_route.ascent = total_ascent;
-
-                print!(".");
-                if i % 100 == 0 {
-                    println!("\nIter {}: Dist={:.2}km, Asc={:.1}m", i, total_dist / 1000.0, total_ascent);
-                }
+            print!(".");
+            if i % 50 == 0 {
+                println!("\nIter {}: Dist={:.2}km, Asc={:.1}m", i, current_route.distance / 1000.0, current_route.ascent);
             }
         }
     }
 
     println!("\nRoute generation finished. Final distance: {:.2}km, Ascent: {:.2}m", current_route.distance / 1000.0, current_route.ascent);
 
-    if current_route.nodes.len() <= 2 && current_route.distance == 0.0 {
-        return None;
-    }
-    build_edge_data_path(graph, &current_route.nodes)
+    Some(build_edge_data_path(graph, &current_route.nodes))
 }
 
 fn find_alternative_path(
@@ -97,8 +124,9 @@ fn find_alternative_path(
     start: NodeIndex,
     end: NodeIndex,
     original_distance: f64,
+    used_edges: &HashSet<EdgeIndex>,
 ) -> Option<(Vec<NodeIndex>, (f64, f64))> {
-    let max_distance = original_distance * 2.0;
+    let max_distance = original_distance * 4.0 + 1000.0;
     let end_point = graph[end];
 
     let result = astar(
@@ -106,9 +134,10 @@ fn find_alternative_path(
         start,
         |finish| finish == end,
         |e| {
+            if used_edges.contains(&e.id()) {
+                return f64::INFINITY;
+            }
             let weight = e.weight();
-            // A cost function that prefers high ascent for a given distance.
-            // Add a small epsilon to avoid division by zero for flat segments.
             weight.distance / (weight.ascent + 1.0)
         },
         |n| {
@@ -119,14 +148,26 @@ fn find_alternative_path(
         },
     );
 
-    if let Some((path_dist, path_nodes)) = result {
-        if path_nodes.len() > 2 && path_dist < max_distance {
-            let props = calculate_route_properties(graph, &path_nodes);
-            return Some((path_nodes, props));
+    if let Some((_, path_nodes)) = result {
+        if path_nodes.len() > 2 {
+            let (actual_dist, actual_ascent) = calculate_route_properties(graph, &path_nodes);
+            if actual_dist < max_distance {
+                return Some((path_nodes, (actual_dist, actual_ascent)));
+            }
         }
     }
 
     None
+}
+
+fn update_used_edges(graph: &RouteGraph, nodes: &[NodeIndex], used_edges: &mut HashSet<EdgeIndex>) {
+    for i in 0..nodes.len() - 1 {
+        let u = nodes[i];
+        let v = nodes[i+1];
+        if let Some(edge_ref) = graph.edges(u).find(|e| e.target() == v) {
+            used_edges.insert(edge_ref.id());
+        }
+    }
 }
 
 fn calculate_route_properties(graph: &RouteGraph, nodes: &[NodeIndex]) -> (f64, f64) {
@@ -144,7 +185,7 @@ fn calculate_route_properties(graph: &RouteGraph, nodes: &[NodeIndex]) -> (f64, 
     (distance, ascent)
 }
 
-fn build_edge_data_path(graph: &RouteGraph, nodes: &[NodeIndex]) -> Option<Vec<EdgeData>> {
+fn build_edge_data_path(graph: &RouteGraph, nodes: &[NodeIndex]) -> Vec<EdgeData> {
     let mut path = Vec::new();
     for i in 0..nodes.len() - 1 {
         let u = nodes[i];
@@ -153,8 +194,9 @@ fn build_edge_data_path(graph: &RouteGraph, nodes: &[NodeIndex]) -> Option<Vec<E
             path.push(edge_ref.weight().clone());
         } else {
             eprintln!("Error: No direct edge found between nodes {:?} and {:?}. This indicates a broken path.", u, v);
-            return None;
+            // Return empty path instead of panicking
+            return Vec::new();
         }
     }
-    Some(path)
+    path
 }
