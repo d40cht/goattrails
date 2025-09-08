@@ -4,24 +4,27 @@ use osmpbf::{Element, ElementReader};
 use petgraph::graph::Graph;
 use std::collections::HashMap;
 use std::error::Error;
+use std::fs;
 use std::fs::File;
 use std::io::Read;
 use tiff::decoder::{Decoder, DecodingResult};
 
 use tiff::tags::Tag;
 
+pub mod map_exporter;
+
 #[derive(Debug, Clone, Copy)]
-struct Point {
-    lat: f64,
-    lon: f64,
+pub struct Point {
+    pub lat: f64,
+    pub lon: f64,
 }
 
 #[derive(Debug, Clone)]
-struct EdgeData {
-    path: Vec<Point>,
-    distance: f64,
-    ascent: f64,
-    descent: f64,
+pub struct EdgeData {
+    pub path: Vec<Point>,
+    pub distance: f64,
+    pub ascent: f64,
+    pub descent: f64,
 }
 
 fn is_valid_way<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> bool {
@@ -299,20 +302,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Pass 5 complete.");
 
     println!("\n--- Top 20 Edges by Ascent ---");
-    let mut top_edges = Vec::new();
-    for edge in graph.edge_weights() {
-        if let Some(center) = centroid(&edge.path) {
-            top_edges.push((edge.ascent, edge.descent, edge.distance, center));
-        }
-    }
+    let mut top_edges: Vec<_> = graph.edge_weights().cloned().collect();
+    top_edges.sort_by(|a, b| b.ascent.partial_cmp(&a.ascent).unwrap_or(std::cmp::Ordering::Equal));
 
-    top_edges.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    let top_20_edges: Vec<_> = top_edges.iter().take(20).cloned().collect();
 
     println!("{:<10} | {:<10} | {:<12} | {:<25}", "Ascent (m)", "Descent (m)", "Distance (m)", "Centroid (Lat, Lon)");
     println!("{:-<11}|{:-<12}|{:-<14}|{:-<26}", "", "", "", "");
-    for (ascent, descent, distance, center) in top_edges.iter().take(20) {
-        println!("{:<10.2} | {:<10.2} | {:<12.2} | ({:.6}, {:.6})", ascent, descent, distance, center.lat, center.lon);
+    for edge in &top_20_edges {
+        if let Some(center) = centroid(&edge.path) {
+            println!(
+                "{:<10.2} | {:<10.2} | {:<12.2} | ({:.6}, {:.6})",
+                edge.ascent, edge.descent, edge.distance, center.lat, center.lon
+            );
+        }
     }
+
+    // --- Pass 6: Generate combined map ---
+    println!("\n--- Generating Combined Map ---");
+    fs::create_dir_all("vis")?;
+    let map_title = "Top 20 Steepest Edges and Parking";
+    let html_content = map_exporter::export_combined_map(&top_20_edges, &parking_locations, map_title);
+    let filename = "vis/map.html";
+    fs::write(filename, html_content)?;
+    println!("-> Saved combined map to {}", filename);
 
     println!("\n--- Network Summary ---");
     println!("Total Network Distance: {:.2} km", total_distance / 1000.0);
