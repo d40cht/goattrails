@@ -100,21 +100,49 @@ pub fn export_combined_map(
     )
 }
 
-pub fn export_route_map(route: &[EdgeData], title: &str) -> String {
-    let mut all_points: Vec<Point> = route
+pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str) -> String {
+    let colors = ["blue", "red", "green", "purple", "orange", "darkred", "lightred", "darkblue", "cadetblue"];
+
+    let route_polylines: Vec<String> = routes
         .iter()
-        .flat_map(|edge| edge.path.iter().copied())
+        .enumerate()
+        .map(|(i, route)| {
+            let mut all_points: Vec<Point> = route
+                .iter()
+                .flat_map(|edge| edge.path.iter().copied())
+                .collect();
+            all_points.dedup();
+
+            let js_points: Vec<String> = all_points
+                .iter()
+                .map(|p| format!("[{}, {}]", p.lat, p.lon))
+                .collect();
+
+            let js_coordinates = format!("[{}]", js_points.join(", "));
+            let color = colors[i % colors.len()];
+
+            let total_dist: f64 = route.iter().map(|e| e.distance).sum();
+            let total_ascent: f64 = route.iter().map(|e| e.ascent).sum();
+            let total_descent: f64 = route.iter().map(|e| e.descent).sum();
+
+            let popup_content = format!(
+                "<b>Route #{}</b><br>Distance: {:.2}km<br>Ascent: {:.2}m<br>Descent: {:.2}m",
+                i + 1,
+                total_dist / 1000.0,
+                total_ascent,
+                total_descent
+            );
+
+            format!(
+                "L.polyline({js_coordinates}, {{ color: '{color}' }}).bindPopup('{popup_content}')",
+                js_coordinates = js_coordinates,
+                color = color,
+                popup_content = popup_content
+            )
+        })
         .collect();
 
-    all_points.dedup();
-
-    let js_points: Vec<String> = all_points
-        .iter()
-        .map(|p| format!("[{}, {}]", p.lat, p.lon))
-        .collect();
-
-    let js_coordinates = format!("[{}]", js_points.join(", "));
-    let route_polyline = format!("L.polyline({js_coordinates}, {{ color: 'blue' }})");
+    let layers_script = route_polylines.join(",\n");
 
     format!(
         r#"
@@ -139,14 +167,22 @@ pub fn export_route_map(route: &[EdgeData], title: &str) -> String {
         attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, SRTM | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)'
     }}).addTo(map);
 
-    var routeLayer = {route_polyline};
-    routeLayer.addTo(map);
-    map.fitBounds(routeLayer.getBounds().pad(0.1));
+    var layers = [
+        {layers_script}
+    ];
+
+    var featureGroup = L.featureGroup(layers).addTo(map);
+
+    if (layers.length > 0) {{
+        map.fitBounds(featureGroup.getBounds().pad(0.1));
+    }} else {{
+        map.setView([51.505, -0.09], 13);
+    }}
 </script>
 </body>
 </html>
 "#,
         title = title,
-        route_polyline = route_polyline
+        layers_script = layers_script
     )
 }

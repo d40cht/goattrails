@@ -105,6 +105,7 @@ pub fn generate_route(
             current_route.distance = chosen_candidate.distance;
             current_route.ascent = chosen_candidate.ascent;
 
+            used_edges.clear();
             update_used_edges(graph, &current_route.nodes, &mut used_edges);
 
             print!(".");

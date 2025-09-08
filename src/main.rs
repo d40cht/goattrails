@@ -11,9 +11,18 @@ use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
 use petgraph::prelude::*;
 use rand::seq::SliceRandom;
+use serde::Deserialize;
 
 pub mod map_exporter;
 pub mod route_generator;
+
+#[derive(Deserialize)]
+struct Config {
+    target_distance_km: f64,
+    algorithm_iterations: usize,
+    route_candidates_to_generate: usize,
+    top_routes_to_display: usize,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Point {
@@ -288,6 +297,9 @@ fn find_nearest_node(graph: &RouteGraph, point: &Point) -> Option<NodeIndex> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let config_str = fs::read_to_string("config.toml")?;
+    let config: Config = toml::from_str(&config_str)?;
+
     let osm_path = "data/oxfordshire-250907.osm.pbf";
     let srtm_path = "data/oxfordshire_ish.SRTMGL1.tif";
 
@@ -306,24 +318,37 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(start_node) = find_nearest_node(&graph, random_parking_spot) {
         println!("Found nearest graph node to start route generation.");
 
-        const TARGET_DISTANCE_KM: f64 = 20.0;
-        const ITERATION_LIMIT: usize = 1000;
-
-        if let Some(route) = route_generator::generate_route(&graph, start_node, TARGET_DISTANCE_KM * 1000.0, ITERATION_LIMIT) {
-            println!("Successfully generated a route!");
-            let total_dist: f64 = route.iter().map(|e| e.distance).sum();
-            let total_ascent: f64 = route.iter().map(|e| e.ascent).sum();
-            println!("Final Route: Distance = {:.2} km, Ascent = {:.2} m", total_dist / 1000.0, total_ascent);
-
-            fs::create_dir_all("vis")?;
-            let map_title = "Generated Running Route";
-            let html_content = map_exporter::export_route_map(&route, map_title);
-            let filename = "vis/final_route.html";
-            fs::write(filename, html_content)?;
-            println!("-> Saved route map to {}", filename);
-        } else {
-            eprintln!("Failed to generate a route after {} iterations.", ITERATION_LIMIT);
+        let mut generated_routes = Vec::new();
+        for i in 0..config.route_candidates_to_generate {
+            println!("\n--- Generating Route Candidate {}/{} ---", i + 1, config.route_candidates_to_generate);
+            if let Some(route) = route_generator::generate_route(&graph, start_node, config.target_distance_km * 1000.0, config.algorithm_iterations) {
+                generated_routes.push(route);
+            } else {
+                eprintln!("Failed to generate a route candidate after {} iterations.", config.algorithm_iterations);
+            }
         }
+
+        if generated_routes.is_empty() {
+            eprintln!("No routes were generated.");
+            return Ok(());
+        }
+
+        println!("\n--- All routes generated. Ranking by ascent... ---");
+
+        generated_routes.sort_by(|a, b| {
+            let a_ascent: f64 = a.iter().map(|e| e.ascent).sum();
+            let b_ascent: f64 = b.iter().map(|e| e.ascent).sum();
+            b_ascent.partial_cmp(&a_ascent).unwrap()
+        });
+
+        let top_routes: Vec<_> = generated_routes.into_iter().take(config.top_routes_to_display).collect();
+
+        fs::create_dir_all("vis")?;
+        let map_title = "Top Generated Routes";
+        let html_content = map_exporter::export_route_map(&top_routes, map_title);
+        let filename = "vis/final_route.html";
+        fs::write(filename, html_content)?;
+        println!("-> Saved top {} routes to {}", top_routes.len(), filename);
 
     } else {
         eprintln!("Could not find a nearby graph node to start from.");
