@@ -6,6 +6,7 @@ use rand::Rng;
 use rand::seq::SliceRandom;
 use geo::HaversineDistance;
 use std::collections::HashSet;
+use indicatif::{ProgressBar, ProgressStyle};
 
 struct Route {
     nodes: Vec<NodeIndex>,
@@ -53,13 +54,22 @@ pub fn generate_route(
     let mut used_edges: HashSet<EdgeIndex> = HashSet::new();
     update_used_edges(graph, &current_route.nodes, &mut used_edges);
 
-    println!("Starting route generation. Initial loop distance: {:.2}m", current_route.distance);
+    let bar = ProgressBar::new(iteration_limit as u64);
+    bar.set_style(ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
+        .unwrap()
+        .progress_chars("#>-"));
 
-    for i in 0..iteration_limit {
+    println!("Starting route generation...");
+
+    for _ in 0..iteration_limit {
         if current_route.distance >= target_distance {
-            println!("\nTarget distance reached after {} iterations.", i);
+            bar.finish_with_message("Target distance reached.");
             break;
         }
+
+        bar.set_message(format!("Dist: {:.2}km, Ascent: {:.1}m", current_route.distance / 1000.0, current_route.ascent));
+        bar.inc(1);
 
         let mut candidates: Vec<CandidateExpansion> = Vec::new();
 
@@ -107,15 +117,10 @@ pub fn generate_route(
 
             used_edges.clear();
             update_used_edges(graph, &current_route.nodes, &mut used_edges);
-
-            print!(".");
-            if i % 50 == 0 {
-                println!("\nIter {}: Dist={:.2}km, Asc={:.1}m", i, current_route.distance / 1000.0, current_route.ascent);
-            }
         }
     }
-
-    println!("\nRoute generation finished. Final distance: {:.2}km, Ascent: {:.2}m", current_route.distance / 1000.0, current_route.ascent);
+    bar.finish();
+    println!("Route generation finished. Final distance: {:.2}km, Ascent: {:.2}m", current_route.distance / 1000.0, current_route.ascent);
 
     Some(build_edge_data_path(graph, &current_route.nodes))
 }

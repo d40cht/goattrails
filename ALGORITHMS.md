@@ -1,14 +1,30 @@
 # Route Generation Algorithm
 
-The core of this application is a route generation algorithm designed to find high-ascent circular routes of a specific target distance. The algorithm is implemented in `src/route_generator.rs` and uses a heuristic-based iterative approach.
+The application uses a two-level process to find optimal routes: an outer loop for generating multiple candidates, and a core inner algorithm for generating a single route. The parameters for this process are controlled by `config.toml`.
 
-## 1. Initialization
+## 1. Overall Process (Outer Loop)
 
-1.  **Starting Point:** The algorithm begins from a single starting node in the graph, which is determined by finding the nearest graph node to a randomly selected parking location.
-2.  **Initial Route:** A small, simple loop is created as the initial route. This is done by finding the nearest neighbor to the starting node and creating a route that goes from `start -> neighbor -> start`. This ensures the route is a valid cycle from the beginning.
-3.  **Used Edges:** A `HashSet` is initialized to keep track of the graph edges that have been included in the route. This is used to prevent the algorithm from selecting the same path segment multiple times in later steps.
+The main application logic in `src/main.rs` orchestrates the high-level route finding strategy:
 
-## 2. Iterative Expansion
+1.  **Configuration:** The application loads its parameters from a `config.toml` file. This includes the number of routes to generate (`X`), the number of top routes to display (`Y`), the target distance, and the iteration limit for the inner algorithm.
+2.  **Graph Construction:** A graph of the local area is built from OpenStreetMap and SRTM data.
+3.  **Start Point Selection:** A random parking location is chosen as the general starting area, and the nearest node in the graph is selected as the precise starting point for all route candidates.
+4.  **Candidate Generation Loop:** The application runs an outer loop `X` times (`route_candidates_to_generate`). In each iteration, it calls the core route generation algorithm to produce one complete route candidate.
+5.  **Ranking and Selection:** After generating `X` routes, the application filters out any that failed to generate. The successful routes are then sorted in descending order based on their total ascent. The top `Y` routes (`top_routes_to_display`) are selected from this sorted list.
+6.  **Export:** The top `Y` routes are passed to the map exporter, which creates an HTML file (`vis/final_route.html`) displaying each route as a colored polyline with a popup containing its statistics.
+
+---
+
+## 2. Core Route Generation Algorithm (Inner Loop)
+
+The core algorithm, located in `src/route_generator.rs`, is responsible for generating a single high-ascent circular route. It uses a heuristic-based iterative approach.
+
+### 2.1. Initialization
+
+1.  **Initial Route:** A small, simple loop is created as the initial route. This is done by finding the nearest neighbor to the starting node and creating a route that goes from `start -> neighbor -> start`. This ensures the route is a valid cycle from the beginning.
+2.  **Used Edges:** A `HashSet` is initialized to keep track of the graph edges that have been included in the route. This is used to prevent the algorithm from selecting the same path segment multiple times in later steps.
+
+### 2.2. Iterative Expansion
 
 The algorithm iteratively expands and improves the route until it reaches the target distance or an iteration limit. The main loop consists of the following steps:
 
@@ -30,10 +46,10 @@ The algorithm iteratively expands and improves the route until it reaches the ta
     d.  After generating `N` candidates, they are sorted by their score in descending order.
     e.  The algorithm then randomly selects one of the top `M` (currently 3) candidates to be the new `current_route` for the next iteration. This element of randomness helps the algorithm to explore different paths and avoid getting stuck in local optima.
 
-## 3. Termination
+### 2.3. Termination
 
 The iterative process terminates when either of the following conditions is met:
 1.  The total distance of the current route exceeds the `target_distance`.
 2.  The number of iterations reaches the `iteration_limit`.
 
-Once the loop terminates, the final route is returned as a sequence of `EdgeData` structs, which is then used to generate the visualization map.
+Once the loop terminates, the final route is returned as a sequence of `EdgeData` structs.

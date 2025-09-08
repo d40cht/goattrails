@@ -5,10 +5,10 @@ target_distance_km = 20.0
 
 # The number of iterations for the inner route-finding algorithm.
 # A higher number may produce better routes but will take longer.
-algorithm_iterations = 100
+algorithm_iterations = 1000
 
 # The number of routes to generate in the outer loop (X).
-route_candidates_to_generate = 5
+route_candidates_to_generate = 10
 
 # The number of top routes to display on the map (Y).
 top_routes_to_display = 3
