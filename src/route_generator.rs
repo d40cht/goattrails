@@ -1,6 +1,7 @@
-use crate::{EdgeData, Point, RouteGraph};
+use crate::{EdgeData, RouteGraph};
 use petgraph::graph::{NodeIndex};
 use petgraph::algo::astar;
+use petgraph::visit::EdgeRef;
 use rand::Rng;
 use rand::seq::SliceRandom;
 use geo::HaversineDistance;
