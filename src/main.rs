@@ -1,19 +1,21 @@
 use geo::{HaversineDistance, HaversineIntermediate, Point as GeoPoint};
 use ndarray::Array2;
 use osmpbf::{Element, ElementReader};
-use petgraph::graph::Graph;
+use petgraph::graph::{Graph, NodeIndex};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::fs::File;
 use std::io::Read;
 use tiff::decoder::{Decoder, DecodingResult};
-
 use tiff::tags::Tag;
+use petgraph::prelude::*;
+use rand::seq::SliceRandom;
 
 pub mod map_exporter;
+pub mod route_generator;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Point {
     pub lat: f64,
     pub lon: f64,
@@ -27,40 +29,29 @@ pub struct EdgeData {
     pub descent: f64,
 }
 
+type RouteGraph = Graph<Point, EdgeData, petgraph::Directed>;
+
 fn is_valid_way<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> bool {
     let mut highway_val: Option<&str> = None;
     let mut access_val: Option<&str> = None;
-
     for (key, value) in tags {
-        if key == "highway" {
-            highway_val = Some(value);
-        } else if key == "access" {
-            access_val = Some(value);
-        }
+        if key == "highway" { highway_val = Some(value); }
+        else if key == "access" { access_val = Some(value); }
     }
-
-    if let Some(access) = access_val {
-        if matches!(access, "private" | "no") {
-            return false;
-        }
-    }
-
+    if let Some(access) = access_val { if matches!(access, "private" | "no") { return false; } }
     if let Some(highway) = highway_val {
         return match highway {
             "path" | "footway" | "track" | "bridleway" | "cycleway" | "residential"
             | "unclassified" | "tertiary" => true,
             "motorway" | "primary" | "trunk" => false,
-            _ => false, // Default to not including other highway types
+            _ => false,
         };
     }
-
     false
 }
 
 fn centroid(points: &[Point]) -> Option<Point> {
-    if points.is_empty() {
-        return None;
-    }
+    if points.is_empty() { return None; }
     let mut lat_sum = 0.0;
     let mut lon_sum = 0.0;
     for point in points {
@@ -68,338 +59,185 @@ fn centroid(points: &[Point]) -> Option<Point> {
         lon_sum += point.lon;
     }
     let count = points.len() as f64;
-    Some(Point {
-        lat: lat_sum / count,
-        lon: lon_sum / count,
-    })
+    Some(Point { lat: lat_sum / count, lon: lon_sum / count })
 }
 
 fn get_geotransform(path: &str) -> Result<[f64; 6], Box<dyn Error>> {
     let mut file = File::open(path)?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
-
     let mut decoder = Decoder::new(std::io::Cursor::new(buffer))?;
-
     let tiepoint = decoder.get_tag_f64_vec(Tag::ModelTiepointTag)?;
     let pixel_scale = decoder.get_tag_f64_vec(Tag::ModelPixelScaleTag)?;
-
-    // Assuming the first tiepoint is the origin
-    let i = tiepoint[0];
-    let j = tiepoint[1];
-    let _k = tiepoint[2];
-    let x = tiepoint[3];
-    let y = tiepoint[4];
-    let _z = tiepoint[5];
-
-    let sx = pixel_scale[0];
-    let sy = pixel_scale[1];
-
-    // Construct the geotransform array
-    // [top_left_x, x_resolution, 0.0, top_left_y, 0.0, -y_resolution]
+    let i = tiepoint[0]; let j = tiepoint[1]; let x = tiepoint[3]; let y = tiepoint[4];
+    let sx = pixel_scale[0]; let sy = pixel_scale[1];
     Ok([x - (i * sx), sx, 0.0, y + (j * sy), 0.0, -sy])
 }
 
-fn get_interpolated_elevation(
-    point: &Point,
-    elevation_data: &Array2<i16>,
-    geo_transform: &[f64; 6],
-) -> Option<f64> {
+fn get_interpolated_elevation(point: &Point, elevation_data: &Array2<i16>, geo_transform: &[f64; 6]) -> Option<f64> {
     let col = ((point.lon - geo_transform[0]) / geo_transform[1]).floor();
     let row = ((point.lat - geo_transform[3]) / geo_transform[5]).floor();
-
     let (height, width) = (elevation_data.shape()[0], elevation_data.shape()[1]);
-
-    if row < 0.0 || col < 0.0 || row + 1.0 >= height as f64 || col + 1.0 >= width as f64 {
-        return None; // Out of bounds
-    }
-
+    if row < 0.0 || col < 0.0 || row + 1.0 >= height as f64 || col + 1.0 >= width as f64 { return None; }
     let x_frac = ((point.lon - geo_transform[0]) / geo_transform[1]) - col;
     let y_frac = ((point.lat - geo_transform[3]) / geo_transform[5]) - row;
-
     let q11 = *elevation_data.get((row as usize, col as usize))? as f64;
     let q21 = *elevation_data.get((row as usize, col as usize + 1))? as f64;
     let q12 = *elevation_data.get((row as usize + 1, col as usize))? as f64;
     let q22 = *elevation_data.get((row as usize + 1, col as usize + 1))? as f64;
-
     let r1 = q11 * (1.0 - x_frac) + q21 * x_frac;
     let r2 = q12 * (1.0 - x_frac) + q22 * x_frac;
-
     Some(r1 * (1.0 - y_frac) + r2 * y_frac)
+}
+
+fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point>), Box<dyn Error>> {
+    const INTERPOLATION_DISTANCE_M: f64 = 10.0;
+    println!("Building graph...");
+    let mut node_coords = HashMap::new();
+    ElementReader::from_path(osm_path)?.for_each(|el| if let Element::Node(n) = el { node_coords.insert(n.id(), Point { lat: n.lat(), lon: n.lon() }); } else if let Element::DenseNode(n) = el { node_coords.insert(n.id(), Point { lat: n.lat(), lon: n.lon() }); })?;
+
+    let mut parking_locations = Vec::new();
+    ElementReader::from_path(osm_path)?.for_each(|el| match el {
+        Element::Node(n) if n.tags().any(|(k, v)| k == "amenity" && v == "parking") => parking_locations.push(Point { lat: n.lat(), lon: n.lon() }),
+        Element::DenseNode(n) if n.tags().any(|(k, v)| k == "amenity" && v == "parking") => parking_locations.push(Point { lat: n.lat(), lon: n.lon() }),
+        Element::Way(w) if w.tags().any(|(k, v)| k == "amenity" && v == "parking") => {
+            if let Some(c) = centroid(&w.refs().filter_map(|id| node_coords.get(&id).copied()).collect::<Vec<_>>()) { parking_locations.push(c); }
+        },
+        _ => (),
+    })?;
+
+    let mut node_ref_counts = HashMap::new();
+    ElementReader::from_path(osm_path)?.for_each(|el| if let Element::Way(w) = el { if is_valid_way(w.tags()) { for id in w.refs() { *node_ref_counts.entry(id).or_insert(0) += 1; } } })?;
+    let intersection_nodes: HashMap<_,_> = node_ref_counts.into_iter().filter(|&(_, c)| c > 1).collect();
+
+    let mut graph = Graph::<Point, EdgeData>::new();
+    let mut osm_id_to_node_index = HashMap::new();
+    for (osm_id, _) in &intersection_nodes {
+        if let Some(p) = node_coords.get(osm_id) { let idx = graph.add_node(*p); osm_id_to_node_index.insert(*osm_id, idx); }
+    }
+
+    ElementReader::from_path(osm_path)?.for_each(|el| if let Element::Way(w) = el { if is_valid_way(w.tags()) {
+        let mut last_intersection_node_id: Option<i64> = None;
+        let mut current_path_segment = Vec::new();
+        for node_id in w.refs() {
+            let p = node_coords.get(&node_id).unwrap();
+            current_path_segment.push(*p);
+            if intersection_nodes.contains_key(&node_id) {
+                if let Some(last_id) = last_intersection_node_id {
+                    let start_idx = *osm_id_to_node_index.get(&last_id).unwrap();
+                    let end_idx = *osm_id_to_node_index.get(&node_id).unwrap();
+                    graph.add_edge(start_idx, end_idx, EdgeData { path: current_path_segment.clone(), distance: 0.0, ascent: 0.0, descent: 0.0 });
+                }
+                last_intersection_node_id = Some(node_id);
+                current_path_segment = vec![*p];
+            }
+        }
+    }})?;
+
+    let geo_transform = get_geotransform(srtm_path)?;
+    let mut f = File::open(srtm_path)?; let mut buf = Vec::new(); f.read_to_end(&mut buf)?;
+    let mut decoder = Decoder::new(std::io::Cursor::new(buf))?;
+    let (w, h) = decoder.dimensions()?;
+    let image_data = match decoder.read_image()? { DecodingResult::I16(d) => d, _ => return Err("Unsupported TIFF".into()) };
+    let elevation_data = Array2::from_shape_vec((h as usize, w as usize), image_data)?;
+
+    for edge in graph.edge_weights_mut() {
+        let (mut dist, mut asc, mut desc) = (0.0, 0.0, 0.0);
+        let mut last_elev: Option<f64> = None;
+        for points in edge.path.windows(2) {
+            let p1 = GeoPoint::new(points[0].lon, points[0].lat); let p2 = GeoPoint::new(points[1].lon, points[1].lat);
+            let seg_dist = p1.haversine_distance(&p2);
+            dist += seg_dist;
+            let n_steps = (seg_dist / INTERPOLATION_DISTANCE_M).ceil() as usize;
+            if n_steps == 0 { continue; }
+            for i in 0..=n_steps {
+                let inter_p = p1.haversine_intermediate(&p2, if n_steps > 0 { i as f64 / n_steps as f64 } else { 0.0 });
+                if let Some(elev) = get_interpolated_elevation(&Point { lat: inter_p.y(), lon: inter_p.x() }, &elevation_data, &geo_transform) {
+                    if let Some(last_e) = last_elev { let delta = elev - last_e; if delta > 0.0 { asc += delta; } else { desc -= delta; } }
+                    last_elev = Some(elev);
+                }
+            }
+        }
+        edge.distance = dist; edge.ascent = asc; edge.descent = desc;
+    }
+
+    println!("Adding reverse edges...");
+    let mut reverse_edges = Vec::new();
+    for edge_ref in graph.edge_references() {
+        let source = edge_ref.source();
+        let target = edge_ref.target();
+        let weight = edge_ref.weight();
+
+        let mut reversed_path = weight.path.clone();
+        reversed_path.reverse();
+
+        reverse_edges.push((target, source, EdgeData {
+            path: reversed_path,
+            distance: weight.distance,
+            ascent: weight.descent, // Ascent for reverse is descent from forward
+            descent: weight.ascent,  // Descent for reverse is ascent from forward
+        }));
+    }
+
+    for (source, target, data) in reverse_edges {
+        graph.add_edge(source, target, data);
+    }
+
+    println!("Graph build complete. Final graph has {} nodes and {} edges.", graph.node_count(), graph.edge_count());
+    Ok((graph, parking_locations))
+}
+
+fn find_nearest_node(graph: &RouteGraph, point: &Point) -> Option<NodeIndex> {
+    graph.node_indices().min_by(|&a, &b| {
+        let p_a = graph[a];
+        let p_b = graph[b];
+        let dist_a = GeoPoint::new(p_a.lon, p_a.lat).haversine_distance(&GeoPoint::new(point.lon, point.lat));
+        let dist_b = GeoPoint::new(p_b.lon, p_b.lat).haversine_distance(&GeoPoint::new(point.lon, point.lat));
+        dist_a.partial_cmp(&dist_b).unwrap()
+    })
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let osm_path = "data/oxfordshire-250907.osm.pbf";
     let srtm_path = "data/oxfordshire_ish.SRTMGL1.tif";
-    const INTERPOLATION_DISTANCE_M: f64 = 10.0;
 
-    // --- Pass 1: Caching node coordinates ---
-    println!("Starting pass 1: Caching node coordinates...");
-    let mut node_coords = HashMap::new();
-    let reader1 = ElementReader::from_path(osm_path)?;
-    reader1.for_each(|element| {
-        if let Element::Node(node) = element {
-            node_coords.insert(
-                node.id(),
-                Point {
-                    lat: node.lat(),
-                    lon: node.lon(),
-                },
-            );
-        } else if let Element::DenseNode(node) = element {
-            node_coords.insert(
-                node.id(),
-                Point {
-                    lat: node.lat(),
-                    lon: node.lon(),
-                },
-            );
-        }
-    })?;
-    println!("Pass 1 complete. Found {} nodes.", node_coords.len());
+    let (graph, parking_locations) = build_graph(osm_path, srtm_path)?;
 
-    // --- Pass 2: Find parking amenities ---
-    println!("Starting pass 2: Finding parking locations...");
-    let reader2 = ElementReader::from_path(osm_path)?;
-    let mut parking_locations = Vec::new();
-    let mut parking_nodes = 0;
-    let mut parking_ways = 0;
-
-    reader2.for_each(|element| match element {
-        Element::Node(node) => {
-            if node
-                .tags()
-                .any(|(key, value)| key == "amenity" && value == "parking")
-            {
-                parking_locations.push(Point {
-                    lat: node.lat(),
-                    lon: node.lon(),
-                });
-                parking_nodes += 1;
-            }
-        }
-        Element::DenseNode(node) => {
-            if node
-                .tags()
-                .any(|(key, value)| key == "amenity" && value == "parking")
-            {
-                parking_locations.push(Point {
-                    lat: node.lat(),
-                    lon: node.lon(),
-                });
-                parking_nodes += 1;
-            }
-        }
-        Element::Way(way) => {
-            if way
-                .tags()
-                .any(|(key, value)| key == "amenity" && value == "parking")
-            {
-                let way_points: Vec<Point> = way
-                    .refs()
-                    .filter_map(|node_id| node_coords.get(&node_id).copied())
-                    .collect();
-                if let Some(center) = centroid(&way_points) {
-                    parking_locations.push(center);
-                    parking_ways += 1;
-                }
-            }
-        }
-        _ => (),
-    })?;
-    println!(
-        "Pass 2 complete. Found {} parking locations ({} from nodes, {} from ways).",
-        parking_locations.len(),
-        parking_nodes,
-        parking_ways
-    );
-
-    // --- Pass 3: Count node references to find intersections ---
-    println!("Starting pass 3: Identifying intersections...");
-    let mut node_ref_counts = HashMap::new();
-    let reader3 = ElementReader::from_path(osm_path)?;
-    reader3.for_each(|element| {
-        if let Element::Way(way) = element {
-            if is_valid_way(way.tags()) {
-                for node_id in way.refs() {
-                    *node_ref_counts.entry(node_id).or_insert(0) += 1;
-                }
-            }
-        }
-    })?;
-    let intersection_nodes: HashMap<_, _> = node_ref_counts
-        .into_iter()
-        .filter(|&(_, count)| count > 1)
-        .collect();
-    println!(
-        "Pass 3 complete. Found {} intersection nodes.",
-        intersection_nodes.len()
-    );
-
-    // --- Pass 4: Build the graph ---
-    println!("Starting pass 4: Building graph...");
-    let mut graph = Graph::<Point, EdgeData>::new();
-    let mut osm_id_to_node_index = HashMap::new();
-
-    for (osm_id, _) in &intersection_nodes {
-        if let Some(point) = node_coords.get(osm_id) {
-            let node_index = graph.add_node(*point);
-            osm_id_to_node_index.insert(*osm_id, node_index);
-        }
+    if parking_locations.is_empty() {
+        eprintln!("No parking locations found. Cannot generate a route.");
+        return Ok(());
     }
 
-    let reader4 = ElementReader::from_path(osm_path)?;
-    reader4.for_each(|element| {
-        if let Element::Way(way) = element {
-            if is_valid_way(way.tags()) {
-                let mut last_intersection_node_id: Option<i64> = None;
-                let mut current_path_segment = Vec::new();
-                for node_id in way.refs() {
-                    let point = node_coords.get(&node_id).unwrap();
-                    current_path_segment.push(*point);
-                    if intersection_nodes.contains_key(&node_id) {
-                        if let Some(last_id) = last_intersection_node_id {
-                            let start_node_idx = osm_id_to_node_index.get(&last_id).unwrap();
-                            let end_node_idx = osm_id_to_node_index.get(&node_id).unwrap();
-                            graph.add_edge(
-                                *start_node_idx,
-                                *end_node_idx,
-                                EdgeData {
-                                    path: current_path_segment.clone(),
-                                    distance: 0.0,
-                                    ascent: 0.0,
-                                    descent: 0.0,
-                                },
-                            );
-                        }
-                        last_intersection_node_id = Some(node_id);
-                        current_path_segment = vec![*point];
-                    }
-                }
-            }
-        }
-    })?;
-    println!(
-        "Pass 4 complete. Graph has {} nodes and {} edges.",
-        graph.node_count(),
-        graph.edge_count()
-    );
+    let mut rng = rand::thread_rng();
+    let random_parking_spot = parking_locations.choose(&mut rng).unwrap();
 
-    // --- Pass 5: Calculate edge weights with interpolation ---
-    println!("Starting pass 5: Calculating edge weights...");
-    let geo_transform = get_geotransform(srtm_path)?;
-    let mut file = File::open(srtm_path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-    let mut decoder = Decoder::new(std::io::Cursor::new(buffer))?;
-    let (width, height) = decoder.dimensions()?;
-    let image_data = match decoder.read_image()? {
-        DecodingResult::I16(data) => data,
-        _ => return Err("Unsupported TIFF data type".into()),
-    };
-    let elevation_data = Array2::from_shape_vec((height as usize, width as usize), image_data)?;
+    println!("\nSelected random starting point near: ({:.4}, {:.4})", random_parking_spot.lat, random_parking_spot.lon);
 
-    let mut total_distance = 0.0;
-    let mut total_ascent = 0.0;
+    if let Some(start_node) = find_nearest_node(&graph, random_parking_spot) {
+        println!("Found nearest graph node to start route generation.");
 
-    for edge in graph.edge_weights_mut() {
-        let mut edge_distance = 0.0;
-        let mut edge_ascent = 0.0;
-        let mut edge_descent = 0.0;
-        let mut last_elevation: Option<f64> = None;
+        let target_distance = 20_000.0; // 20km
+        let iterations = 1000;
 
-        for points in edge.path.windows(2) {
-            let p1 = points[0];
-            let p2 = points[1];
-            let geo_p1 = GeoPoint::new(p1.lon, p1.lat);
-            let geo_p2 = GeoPoint::new(p2.lon, p2.lat);
-            let segment_distance = geo_p1.haversine_distance(&geo_p2);
-            edge_distance += segment_distance;
+        if let Some(route) = route_generator::generate_route(&graph, start_node, target_distance, iterations) {
+            println!("Successfully generated a route!");
+            let total_dist: f64 = route.iter().map(|e| e.distance).sum();
+            let total_ascent: f64 = route.iter().map(|e| e.ascent).sum();
+            println!("Final Route: Distance = {:.2} km, Ascent = {:.2} m", total_dist / 1000.0, total_ascent);
 
-            let num_steps = (segment_distance / INTERPOLATION_DISTANCE_M).ceil() as usize;
-            if num_steps == 0 {
-                continue;
-            }
-
-            for i in 0..=num_steps {
-                let fraction = if num_steps > 0 {
-                    i as f64 / num_steps as f64
-                } else {
-                    0.0
-                };
-                let intermediate_geo_point = geo_p1.haversine_intermediate(&geo_p2, fraction);
-                let intermediate_point = Point {
-                    lat: intermediate_geo_point.y(),
-                    lon: intermediate_geo_point.x(),
-                };
-
-                if let Some(elevation) =
-                    get_interpolated_elevation(&intermediate_point, &elevation_data, &geo_transform)
-                {
-                    if let Some(last_elev) = last_elevation {
-                        let delta = elevation - last_elev;
-                        if delta > 0.0 {
-                            edge_ascent += delta;
-                        } else {
-                            edge_descent -= delta;
-                        }
-                    }
-                    last_elevation = Some(elevation);
-                }
-            }
+            fs::create_dir_all("vis")?;
+            let map_title = "Generated Running Route";
+            let html_content = map_exporter::export_route_map(&route, map_title);
+            let filename = "vis/final_route.html";
+            fs::write(filename, html_content)?;
+            println!("-> Saved route map to {}", filename);
+        } else {
+            eprintln!("Failed to generate a route after {} iterations.", iterations);
         }
 
-        edge.distance = edge_distance;
-        edge.ascent = edge_ascent;
-        edge.descent = edge_descent;
-
-        total_distance += edge_distance;
-        total_ascent += edge_ascent;
+    } else {
+        eprintln!("Could not find a nearby graph node to start from.");
     }
-
-    println!("Pass 5 complete.");
-    println!("Total distance: {}, total ascent: {}", total_distance, total_ascent);
-
-    println!("\n--- Top Edges by Ascent ---");
-    let mut top_edges: Vec<_> = graph.edge_weights().cloned().collect();
-    top_edges.sort_by(|a, b| {
-        let a_ascent = f64::max(a.ascent, a.descent);
-        let b_ascent = f64::max(b.ascent, b.descent);
-        b_ascent
-            .partial_cmp(&a_ascent)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    let top_edges: Vec<_> = top_edges.iter().take(50).cloned().collect();
-
-    println!(
-        "{:<10} | {:<10} | {:<12} | {:<25}",
-        "Ascent (m)", "Descent (m)", "Distance (m)", "Centroid (Lat, Lon)"
-    );
-    println!("{:-<11}|{:-<12}|{:-<14}|{:-<26}", "", "", "", "");
-    for edge in &top_edges {
-        if let Some(center) = centroid(&edge.path) {
-            println!(
-                "{:<10.2} | {:<10.2} | {:<12.2} | ({:.6}, {:.6})",
-                edge.ascent, edge.descent, edge.distance, center.lat, center.lon
-            );
-        }
-    }
-
-    parking_locations.clear();
-
-    // --- Pass 6: Generate combined map ---
-    println!("\n--- Generating Combined Map ---");
-    fs::create_dir_all("vis")?;
-    let map_title = "Top Steepest Edges and Parking";
-    let html_content = map_exporter::export_combined_map(&top_edges, &parking_locations, map_title);
-    let filename = "vis/map.html";
-    fs::write(filename, html_content)?;
-    println!("-> Saved combined map to {}", filename);
-
-    println!("\n--- Network Summary ---");
-    println!("Total Network Distance: {:.2} km", total_distance / 1000.0);
-    println!("Total Network Ascent: {:.2} m", total_ascent);
 
     Ok(())
 }
