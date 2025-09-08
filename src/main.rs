@@ -1,4 +1,4 @@
-use geo::{Point as GeoPoint, HaversineDistance, HaversineIntermediate};
+use geo::{HaversineDistance, HaversineIntermediate, Point as GeoPoint};
 use ndarray::Array2;
 use osmpbf::{Element, ElementReader};
 use petgraph::graph::Graph;
@@ -78,7 +78,7 @@ fn get_geotransform(path: &str) -> Result<[f64; 6], Box<dyn Error>> {
     let mut file = File::open(path)?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
-    
+
     let mut decoder = Decoder::new(std::io::Cursor::new(buffer))?;
 
     let tiepoint = decoder.get_tag_f64_vec(Tag::ModelTiepointTag)?;
@@ -97,14 +97,7 @@ fn get_geotransform(path: &str) -> Result<[f64; 6], Box<dyn Error>> {
 
     // Construct the geotransform array
     // [top_left_x, x_resolution, 0.0, top_left_y, 0.0, -y_resolution]
-    Ok([
-        x - (i * sx),
-        sx,
-        0.0,
-        y + (j * sy),
-        0.0,
-        -sy,
-    ])
+    Ok([x - (i * sx), sx, 0.0, y + (j * sy), 0.0, -sy])
 }
 
 fn get_interpolated_elevation(
@@ -131,7 +124,7 @@ fn get_interpolated_elevation(
 
     let r1 = q11 * (1.0 - x_frac) + q21 * x_frac;
     let r2 = q12 * (1.0 - x_frac) + q22 * x_frac;
-    
+
     Some(r1 * (1.0 - y_frac) + r2 * y_frac)
 }
 
@@ -146,9 +139,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     let reader1 = ElementReader::from_path(osm_path)?;
     reader1.for_each(|element| {
         if let Element::Node(node) = element {
-            node_coords.insert(node.id(), Point { lat: node.lat(), lon: node.lon() });
+            node_coords.insert(
+                node.id(),
+                Point {
+                    lat: node.lat(),
+                    lon: node.lon(),
+                },
+            );
         } else if let Element::DenseNode(node) = element {
-            node_coords.insert(node.id(), Point { lat: node.lat(), lon: node.lon() });
+            node_coords.insert(
+                node.id(),
+                Point {
+                    lat: node.lat(),
+                    lon: node.lon(),
+                },
+            );
         }
     })?;
     println!("Pass 1 complete. Found {} nodes.", node_coords.len());
@@ -162,20 +167,38 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     reader2.for_each(|element| match element {
         Element::Node(node) => {
-            if node.tags().any(|(key, value)| key == "amenity" && value == "parking") {
-                parking_locations.push(Point { lat: node.lat(), lon: node.lon() });
+            if node
+                .tags()
+                .any(|(key, value)| key == "amenity" && value == "parking")
+            {
+                parking_locations.push(Point {
+                    lat: node.lat(),
+                    lon: node.lon(),
+                });
                 parking_nodes += 1;
             }
         }
         Element::DenseNode(node) => {
-            if node.tags().any(|(key, value)| key == "amenity" && value == "parking") {
-                parking_locations.push(Point { lat: node.lat(), lon: node.lon() });
+            if node
+                .tags()
+                .any(|(key, value)| key == "amenity" && value == "parking")
+            {
+                parking_locations.push(Point {
+                    lat: node.lat(),
+                    lon: node.lon(),
+                });
                 parking_nodes += 1;
             }
         }
         Element::Way(way) => {
-            if way.tags().any(|(key, value)| key == "amenity" && value == "parking") {
-                let way_points: Vec<Point> = way.refs().filter_map(|node_id| node_coords.get(&node_id).copied()).collect();
+            if way
+                .tags()
+                .any(|(key, value)| key == "amenity" && value == "parking")
+            {
+                let way_points: Vec<Point> = way
+                    .refs()
+                    .filter_map(|node_id| node_coords.get(&node_id).copied())
+                    .collect();
                 if let Some(center) = centroid(&way_points) {
                     parking_locations.push(center);
                     parking_ways += 1;
@@ -184,7 +207,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         _ => (),
     })?;
-    println!("Pass 2 complete. Found {} parking locations ({} from nodes, {} from ways).", parking_locations.len(), parking_nodes, parking_ways);
+    println!(
+        "Pass 2 complete. Found {} parking locations ({} from nodes, {} from ways).",
+        parking_locations.len(),
+        parking_nodes,
+        parking_ways
+    );
 
     // --- Pass 3: Count node references to find intersections ---
     println!("Starting pass 3: Identifying intersections...");
@@ -199,8 +227,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     })?;
-    let intersection_nodes: HashMap<_, _> = node_ref_counts.into_iter().filter(|&(_, count)| count > 1).collect();
-    println!("Pass 3 complete. Found {} intersection nodes.", intersection_nodes.len());
+    let intersection_nodes: HashMap<_, _> = node_ref_counts
+        .into_iter()
+        .filter(|&(_, count)| count > 1)
+        .collect();
+    println!(
+        "Pass 3 complete. Found {} intersection nodes.",
+        intersection_nodes.len()
+    );
 
     // --- Pass 4: Build the graph ---
     println!("Starting pass 4: Building graph...");
@@ -227,7 +261,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                         if let Some(last_id) = last_intersection_node_id {
                             let start_node_idx = osm_id_to_node_index.get(&last_id).unwrap();
                             let end_node_idx = osm_id_to_node_index.get(&node_id).unwrap();
-                            graph.add_edge(*start_node_idx, *end_node_idx, EdgeData { path: current_path_segment.clone(), distance: 0.0, ascent: 0.0, descent: 0.0 });
+                            graph.add_edge(
+                                *start_node_idx,
+                                *end_node_idx,
+                                EdgeData {
+                                    path: current_path_segment.clone(),
+                                    distance: 0.0,
+                                    ascent: 0.0,
+                                    descent: 0.0,
+                                },
+                            );
                         }
                         last_intersection_node_id = Some(node_id);
                         current_path_segment = vec![*point];
@@ -236,7 +279,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     })?;
-    println!("Pass 4 complete. Graph has {} nodes and {} edges.", graph.node_count(), graph.edge_count());
+    println!(
+        "Pass 4 complete. Graph has {} nodes and {} edges.",
+        graph.node_count(),
+        graph.edge_count()
+    );
 
     // --- Pass 5: Calculate edge weights with interpolation ---
     println!("Starting pass 5: Calculating edge weights...");
@@ -270,14 +317,25 @@ fn main() -> Result<(), Box<dyn Error>> {
             edge_distance += segment_distance;
 
             let num_steps = (segment_distance / INTERPOLATION_DISTANCE_M).ceil() as usize;
-            if num_steps == 0 { continue; }
+            if num_steps == 0 {
+                continue;
+            }
 
             for i in 0..=num_steps {
-                let fraction = if num_steps > 0 { i as f64 / num_steps as f64 } else { 0.0 };
+                let fraction = if num_steps > 0 {
+                    i as f64 / num_steps as f64
+                } else {
+                    0.0
+                };
                 let intermediate_geo_point = geo_p1.haversine_intermediate(&geo_p2, fraction);
-                let intermediate_point = Point { lat: intermediate_geo_point.y(), lon: intermediate_geo_point.x() };
+                let intermediate_point = Point {
+                    lat: intermediate_geo_point.y(),
+                    lon: intermediate_geo_point.x(),
+                };
 
-                if let Some(elevation) = get_interpolated_elevation(&intermediate_point, &elevation_data, &geo_transform) {
+                if let Some(elevation) =
+                    get_interpolated_elevation(&intermediate_point, &elevation_data, &geo_transform)
+                {
                     if let Some(last_elev) = last_elevation {
                         let delta = elevation - last_elev;
                         if delta > 0.0 {
@@ -303,13 +361,20 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("\n--- Top 20 Edges by Ascent ---");
     let mut top_edges: Vec<_> = graph.edge_weights().cloned().collect();
-    top_edges.sort_by(|a, b| b.ascent.partial_cmp(&a.ascent).unwrap_or(std::cmp::Ordering::Equal));
+    top_edges.sort_by(|a, b| {
+        b.ascent
+            .partial_cmp(&a.ascent)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
-    let top_20_edges: Vec<_> = top_edges.iter().take(20).cloned().collect();
+    let top_edges: Vec<_> = top_edges.iter().take(50).cloned().collect();
 
-    println!("{:<10} | {:<10} | {:<12} | {:<25}", "Ascent (m)", "Descent (m)", "Distance (m)", "Centroid (Lat, Lon)");
+    println!(
+        "{:<10} | {:<10} | {:<12} | {:<25}",
+        "Ascent (m)", "Descent (m)", "Distance (m)", "Centroid (Lat, Lon)"
+    );
     println!("{:-<11}|{:-<12}|{:-<14}|{:-<26}", "", "", "", "");
-    for edge in &top_20_edges {
+    for edge in &top_edges {
         if let Some(center) = centroid(&edge.path) {
             println!(
                 "{:<10.2} | {:<10.2} | {:<12.2} | ({:.6}, {:.6})",
@@ -318,11 +383,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    parking_locations.clear();
+
     // --- Pass 6: Generate combined map ---
     println!("\n--- Generating Combined Map ---");
     fs::create_dir_all("vis")?;
-    let map_title = "Top 20 Steepest Edges and Parking";
-    let html_content = map_exporter::export_combined_map(&top_20_edges, &parking_locations, map_title);
+    let map_title = "Top Steepest Edges and Parking";
+    let html_content = map_exporter::export_combined_map(&top_edges, &parking_locations, map_title);
     let filename = "vis/map.html";
     fs::write(filename, html_content)?;
     println!("-> Saved combined map to {}", filename);
