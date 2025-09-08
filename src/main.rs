@@ -294,12 +294,26 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         total_distance += edge_distance;
         total_ascent += edge_ascent;
-
-        edge.path.clear();
-        edge.path.shrink_to_fit();
     }
 
     println!("Pass 5 complete.");
+
+    println!("\n--- Top 20 Edges by Ascent ---");
+    let mut top_edges = Vec::new();
+    for edge in graph.edge_weights() {
+        if let Some(center) = centroid(&edge.path) {
+            top_edges.push((edge.ascent, edge.descent, edge.distance, center));
+        }
+    }
+
+    top_edges.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    println!("{:<10} | {:<10} | {:<12} | {:<25}", "Ascent (m)", "Descent (m)", "Distance (m)", "Centroid (Lat, Lon)");
+    println!("{:-<11}|{:-<12}|{:-<14}|{:-<26}", "", "", "", "");
+    for (ascent, descent, distance, center) in top_edges.iter().take(20) {
+        println!("{:<10.2} | {:<10.2} | {:<12.2} | ({:.6}, {:.6})", ascent, descent, distance, center.lat, center.lon);
+    }
+
     println!("\n--- Network Summary ---");
     println!("Total Network Distance: {:.2} km", total_distance / 1000.0);
     println!("Total Network Ascent: {:.2} m", total_ascent);
