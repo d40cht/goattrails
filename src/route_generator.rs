@@ -1,7 +1,6 @@
 use crate::{EdgeData, Point, RouteGraph};
-use petgraph::graph::{NodeIndex, EdgeIndex};
+use petgraph::graph::{NodeIndex};
 use petgraph::algo::astar;
-use petgraph::visit::EdgeRef;
 use rand::Rng;
 use rand::seq::SliceRandom;
 use geo::HaversineDistance;
@@ -51,9 +50,6 @@ pub fn generate_route(
         ascent: initial_ascent,
     };
 
-    let mut used_edges: HashSet<EdgeIndex> = HashSet::new();
-    update_used_edges(graph, &current_route.nodes, &mut used_edges);
-
     let bar = ProgressBar::new(iteration_limit as u64);
     bar.set_style(ProgressStyle::default_bar()
         .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
@@ -85,7 +81,12 @@ pub fn generate_route(
 
             let original_segment_dist = calculate_route_properties(graph, &current_route.nodes[segment_start_idx..=segment_end_idx]).0;
 
-            if let Some((new_path_nodes, (new_dist, new_ascent))) = find_alternative_path(graph, u, v, original_segment_dist, &used_edges) {
+            let mut forbidden_way_ids = HashSet::new();
+            if let Some(edge_to_replace) = graph.find_edge(u, v) {
+                forbidden_way_ids.insert(graph[edge_to_replace].original_way_id);
+            }
+
+            if let Some((new_path_nodes, (new_dist, new_ascent))) = find_alternative_path(graph, u, v, original_segment_dist, &forbidden_way_ids) {
 
                 let mut potential_new_route_nodes = current_route.nodes.clone();
                 potential_new_route_nodes.splice(segment_start_idx..=segment_end_idx, new_path_nodes);
@@ -114,9 +115,6 @@ pub fn generate_route(
             current_route.nodes = chosen_candidate.nodes.clone();
             current_route.distance = chosen_candidate.distance;
             current_route.ascent = chosen_candidate.ascent;
-
-            used_edges.clear();
-            update_used_edges(graph, &current_route.nodes, &mut used_edges);
         }
     }
     bar.finish();
@@ -130,7 +128,7 @@ fn find_alternative_path(
     start: NodeIndex,
     end: NodeIndex,
     original_distance: f64,
-    used_edges: &HashSet<EdgeIndex>,
+    used_way_ids: &HashSet<i64>,
 ) -> Option<(Vec<NodeIndex>, (f64, f64))> {
     let max_distance = original_distance * 4.0 + 1000.0;
     let end_point = graph[end];
@@ -140,7 +138,7 @@ fn find_alternative_path(
         start,
         |finish| finish == end,
         |e| {
-            if used_edges.contains(&e.id()) {
+            if used_way_ids.contains(&e.weight().original_way_id) {
                 return f64::INFINITY;
             }
             let weight = e.weight();
@@ -164,16 +162,6 @@ fn find_alternative_path(
     }
 
     None
-}
-
-fn update_used_edges(graph: &RouteGraph, nodes: &[NodeIndex], used_edges: &mut HashSet<EdgeIndex>) {
-    for i in 0..nodes.len() - 1 {
-        let u = nodes[i];
-        let v = nodes[i+1];
-        if let Some(edge_ref) = graph.edges(u).find(|e| e.target() == v) {
-            used_edges.insert(edge_ref.id());
-        }
-    }
 }
 
 fn calculate_route_properties(graph: &RouteGraph, nodes: &[NodeIndex]) -> (f64, f64) {

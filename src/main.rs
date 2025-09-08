@@ -32,6 +32,7 @@ pub struct Point {
 
 #[derive(Debug, Clone)]
 pub struct EdgeData {
+    pub original_way_id: i64,
     pub path: Vec<Point>,
     pub distance: f64,
     pub ascent: f64,
@@ -201,7 +202,7 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
                         if let Some(last_id) = last_intersection_node_id {
                             let start_idx = *osm_id_to_node_index.get(&last_id).unwrap();
                             let end_idx = *osm_id_to_node_index.get(&node_id).unwrap();
-                            graph.add_edge(start_idx, end_idx, EdgeData { path: current_path_segment.clone(), distance: 0.0, ascent: 0.0, descent: 0.0 });
+                            graph.add_edge(start_idx, end_idx, EdgeData { original_way_id: way.id(), path: current_path_segment.clone(), distance: 0.0, ascent: 0.0, descent: 0.0 });
                         }
                         last_intersection_node_id = Some(node_id);
                         current_path_segment = vec![*point];
@@ -271,6 +272,7 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
         reversed_path.reverse();
 
         reverse_edges.push((target, source, EdgeData {
+            original_way_id: weight.original_way_id,
             path: reversed_path,
             distance: weight.distance,
             ascent: weight.descent,
