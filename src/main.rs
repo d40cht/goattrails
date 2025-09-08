@@ -345,6 +345,18 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         let top_routes: Vec<_> = generated_routes.into_iter().take(config.top_routes_to_display).collect();
 
+        println!("\n--- Top {} Routes ---", top_routes.len());
+        for (i, route) in top_routes.iter().enumerate() {
+            let total_dist: f64 = route.iter().map(|e| e.distance).sum();
+            let total_ascent: f64 = route.iter().map(|e| e.ascent).sum();
+            println!("\nRoute #{}: Distance = {:.2}km, Ascent = {:.2}m", i + 1, total_dist / 1000.0, total_ascent);
+            println!("{:<15} | {:<12} | {:<10} | {:<10}", "Way ID", "Distance (m)", "Ascent (m)", "Descent (m)");
+            println!("{:-<16}|{:-<14}|{:-<12}|{:-<12}", "", "", "", "");
+            for segment in route {
+                println!("{:<15} | {:<12.2} | {:<10.2} | {:<10.2}", segment.original_way_id, segment.distance, segment.ascent, segment.descent);
+            }
+        }
+
         fs::create_dir_all("vis")?;
         let map_title = "Top Generated Routes";
         let html_content = map_exporter::export_route_map(&top_routes, map_title);
