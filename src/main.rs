@@ -63,6 +63,7 @@ pub struct EdgeData {
     pub segment_id: u32,
     pub path: Vec<Point>,
     pub distance: f64,
+    pub weighted_distance: f64,
     pub ascent: f64,
     pub descent: f64,
     pub start_node: NodeIndex,
@@ -238,6 +239,7 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
                                 segment_id: segment_id_counter,
                                 path: current_path_segment.clone(),
                                 distance: 0.0,
+                                weighted_distance: 0.0,
                                 ascent: 0.0,
                                 descent: 0.0,
                                 start_node: start_idx,
@@ -250,6 +252,7 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
                                 segment_id: segment_id_counter,
                                 path: reversed_path,
                                 distance: 0.0,
+                                weighted_distance: 0.0,
                                 ascent: 0.0,
                                 descent: 0.0,
                                 start_node: end_idx,
@@ -314,6 +317,7 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
             }
         }
         edge.distance = distance;
+        edge.weighted_distance = distance;
         edge.ascent = ascent;
         edge.descent = descent;
     }
@@ -356,7 +360,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let config_str = fs::read_to_string(args.config)?;
     let config: Config = toml::from_str(&config_str)?;
 
-    let (graph, _parking_locations) = build_graph(&config.global.osm_path, &config.global.srtm_path)?;
+    let (mut graph, _parking_locations) = build_graph(&config.global.osm_path, &config.global.srtm_path)?;
 
     for (route_name, route_config) in config.routes {
         println!("\n--- Processing route: {} ---", route_name);
@@ -371,7 +375,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             for i in 0..route_config.num_candidate_routes {
                 println!("\n--- Generating Route Candidate {}/{} for {} ---", i + 1, route_config.num_candidate_routes, route_name);
                 if let Some(route) = route_generator::generate_route(
-                    &graph,
+                    &mut graph,
                     start_node,
                     route_config.target_distance_km * 1000.0,
                     config.global.algorithm_iterations,

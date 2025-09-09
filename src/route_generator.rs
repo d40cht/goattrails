@@ -17,7 +17,7 @@ struct CandidateSegment {
 }
 
 pub fn generate_route(
-    graph: &RouteGraph,
+    graph: &mut RouteGraph,
     start_node: NodeIndex,
     target_distance: f64,
     _iteration_limit: usize, // iteration_limit is not used in the new algo
@@ -69,27 +69,51 @@ pub fn generate_route(
     }
     println!("Identified {} candidate segments.", top_candidates.len());
 
-    // Step 2: Pre-computation of Shortest Paths (APSP)
-    println!("\nPre-computing shortest paths between key nodes...");
-    let mut key_nodes: HashSet<NodeIndex> = top_candidates.iter().flat_map(|s| [s.start_node, s.end_node]).collect();
-    key_nodes.insert(start_node);
-    let key_nodes_vec: Vec<NodeIndex> = key_nodes.into_iter().collect();
-
-    let mut distance_matrix = HashMap::new();
-    let bar = ProgressBar::new(key_nodes_vec.len() as u64);
-    bar.set_style(ProgressStyle::default_bar().template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})").unwrap().progress_chars("#>-"));
-
-    for &from_node in &key_nodes_vec {
-        bar.inc(1);
-        let shortest_paths = dijkstra(graph, from_node, None, |e| e.weight().distance);
-        for &to_node in &key_nodes_vec {
-            if let Some(distance) = shortest_paths.get(&to_node) {
-                distance_matrix.insert((from_node, to_node), *distance);
-            }
+    // --- START: NEW SECTION TO PENALIZE CANDIDATE SEGMENTS ---
+    println!("\nApplying penalty to candidate segments for APSP calculation...");
+    const PENALTY_FACTOR: f64 = 4.0;
+    for candidate in &top_candidates {
+        let edge_index = graph.find_edge(candidate.start_node, candidate.end_node).unwrap();
+        if let Some(edge_weight) = graph.edge_weight_mut(edge_index) {
+            edge_weight.weighted_distance = edge_weight.distance * PENALTY_FACTOR;
         }
     }
-    bar.finish_with_message("APSP calculation complete.");
-    println!("Distance matrix has {} entries.", distance_matrix.len());
+    // --- END: NEW SECTION ---
+
+    // Step 2: Pre-computation of Shortest Paths (APSP)
+    let distance_matrix = {
+        println!("\nPre-computing shortest paths between key nodes...");
+        let mut key_nodes: HashSet<NodeIndex> = top_candidates.iter().flat_map(|s| [s.start_node, s.end_node]).collect();
+        key_nodes.insert(start_node);
+        let key_nodes_vec: Vec<NodeIndex> = key_nodes.into_iter().collect();
+
+        let mut distance_matrix = HashMap::new();
+        let bar = ProgressBar::new(key_nodes_vec.len() as u64);
+        bar.set_style(ProgressStyle::default_bar().template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})").unwrap().progress_chars("#>-"));
+
+        let immutable_graph: &RouteGraph = graph;
+        for &from_node in &key_nodes_vec {
+            bar.inc(1);
+            let shortest_paths = dijkstra(immutable_graph, from_node, None, |e| e.weight().weighted_distance);
+            for &to_node in &key_nodes_vec {
+                if let Some(distance) = shortest_paths.get(&to_node) {
+                    distance_matrix.insert((from_node, to_node), *distance);
+                }
+            }
+        }
+        bar.finish_with_message("APSP calculation complete.");
+        println!("Distance matrix has {} entries.", distance_matrix.len());
+        distance_matrix
+    };
+
+    // --- START: NEW SECTION TO RESET WEIGHTS ---
+    for candidate in &top_candidates {
+        let edge_index = graph.find_edge(candidate.start_node, candidate.end_node).unwrap();
+        if let Some(edge_weight) = graph.edge_weight_mut(edge_index) {
+            edge_weight.weighted_distance = edge_weight.distance;
+        }
+    }
+    // --- END: NEW SECTION ---
 
     // Step 3: Route Calculation using Greedy Insertion
     println!("\nCalculating best route using greedy insertion...");
@@ -159,24 +183,48 @@ pub fn generate_route(
 
     // Step 4: Reconstruct final path
     println!("\nReconstructing final route path...");
+    let final_path_nodes = {
+        let immutable_graph: &RouteGraph = graph;
+        // Create a set of discouraged reverse edges
+        let discouraged_edges: HashSet<(NodeIndex, NodeIndex)> = tour
+            .iter()
+            .map(|segment| (segment.end_node, segment.start_node))
+            .collect();
 
-    // Create a set of discouraged reverse edges
-    let discouraged_edges: HashSet<(NodeIndex, NodeIndex)> = tour
-        .iter()
-        .map(|segment| (segment.end_node, segment.start_node))
-        .collect();
+        let mut final_path_nodes = vec![start_node];
+        let mut current_node = start_node;
+        let path_bar = ProgressBar::new(tour.len() as u64 + 1);
+        path_bar.set_style(ProgressStyle::default_bar().template("{spinner:.green} Reconstructing path... [{bar:40.cyan/blue}] {pos}/{len}").unwrap().progress_chars("#>-"));
 
-    let mut final_path_nodes = vec![start_node];
-    let mut current_node = start_node;
-    let path_bar = ProgressBar::new(tour.len() as u64 + 1);
-    path_bar.set_style(ProgressStyle::default_bar().template("{spinner:.green} Reconstructing path... [{bar:40.cyan/blue}] {pos}/{len}").unwrap().progress_chars("#>-"));
+        for segment in &tour {
+            path_bar.inc(1);
+            if let Some((_, path)) = astar(
+                immutable_graph,
+                current_node,
+                |n| n == segment.start_node,
+                |e| {
+                    if discouraged_edges.contains(&(e.source(), e.target())) {
+                        e.weight().distance * 4.0
+                    } else {
+                        e.weight().distance
+                    }
+                },
+                |_| 0.0,
+            ) {
+                final_path_nodes.extend(&path[1..]);
+            } else {
+                eprintln!("Could not find path between {:?} and {:?}", current_node, segment.start_node);
+                return None;
+            }
+            final_path_nodes.push(segment.end_node);
+            current_node = segment.end_node;
+        }
 
-    for segment in &tour {
         path_bar.inc(1);
         if let Some((_, path)) = astar(
-            graph,
+            immutable_graph,
             current_node,
-            |n| n == segment.start_node,
+            |n| n == start_node,
             |e| {
                 if discouraged_edges.contains(&(e.source(), e.target())) {
                     e.weight().distance * 4.0
@@ -188,33 +236,12 @@ pub fn generate_route(
         ) {
             final_path_nodes.extend(&path[1..]);
         } else {
-            eprintln!("Could not find path between {:?} and {:?}", current_node, segment.start_node);
+            eprintln!("Could not find path back to start node from {:?}", current_node);
             return None;
         }
-        final_path_nodes.push(segment.end_node);
-        current_node = segment.end_node;
-    }
-
-    path_bar.inc(1);
-    if let Some((_, path)) = astar(
-        graph,
-        current_node,
-        |n| n == start_node,
-        |e| {
-            if discouraged_edges.contains(&(e.source(), e.target())) {
-                e.weight().distance * 4.0
-            } else {
-                e.weight().distance
-            }
-        },
-        |_| 0.0,
-    ) {
-        final_path_nodes.extend(&path[1..]);
-    } else {
-        eprintln!("Could not find path back to start node from {:?}", current_node);
-        return None;
-    }
-    path_bar.finish();
+        path_bar.finish();
+        final_path_nodes
+    };
 
     println!("Final path has {} nodes.", final_path_nodes.len());
     Some(build_edge_data_path(graph, &final_path_nodes))
@@ -266,23 +293,23 @@ mod tests {
         let n3 = graph.add_node(Point { lat: 0.01, lon: 0.01 });
         let n4 = graph.add_node(Point { lat: 0.01, lon: 0.0 });
 
-        graph.add_edge(n1, n2, EdgeData { segment_id: 1, path: vec![], distance: 1000.0, ascent: 10.0, descent: 5.0, start_node: n1, end_node: n2 });
-        graph.add_edge(n2, n1, EdgeData { segment_id: 1, path: vec![], distance: 1000.0, ascent: 5.0, descent: 10.0, start_node: n2, end_node: n1 });
-        graph.add_edge(n2, n3, EdgeData { segment_id: 2, path: vec![], distance: 1000.0, ascent: 20.0, descent: 0.0, start_node: n2, end_node: n3 });
-        graph.add_edge(n3, n2, EdgeData { segment_id: 2, path: vec![], distance: 1000.0, ascent: 0.0, descent: 20.0, start_node: n3, end_node: n2 });
-        graph.add_edge(n3, n4, EdgeData { segment_id: 3, path: vec![], distance: 1000.0, ascent: 30.0, descent: 10.0, start_node: n3, end_node: n4 });
-        graph.add_edge(n4, n3, EdgeData { segment_id: 3, path: vec![], distance: 1000.0, ascent: 10.0, descent: 30.0, start_node: n4, end_node: n3 });
-        graph.add_edge(n4, n1, EdgeData { segment_id: 4, path: vec![], distance: 1000.0, ascent: 40.0, descent: 0.0, start_node: n4, end_node: n1 });
-        graph.add_edge(n1, n4, EdgeData { segment_id: 4, path: vec![], distance: 1000.0, ascent: 0.0, descent: 40.0, start_node: n1, end_node: n4 });
-        graph.add_edge(n1, n3, EdgeData { segment_id: 5, path: vec![], distance: 1414.0, ascent: 5.0, descent: 5.0, start_node: n1, end_node: n3 });
-        graph.add_edge(n3, n1, EdgeData { segment_id: 5, path: vec![], distance: 1414.0, ascent: 5.0, descent: 5.0, start_node: n3, end_node: n1 });
+        graph.add_edge(n1, n2, EdgeData { segment_id: 1, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 10.0, descent: 5.0, start_node: n1, end_node: n2 });
+        graph.add_edge(n2, n1, EdgeData { segment_id: 1, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 5.0, descent: 10.0, start_node: n2, end_node: n1 });
+        graph.add_edge(n2, n3, EdgeData { segment_id: 2, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 20.0, descent: 0.0, start_node: n2, end_node: n3 });
+        graph.add_edge(n3, n2, EdgeData { segment_id: 2, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 0.0, descent: 20.0, start_node: n3, end_node: n2 });
+        graph.add_edge(n3, n4, EdgeData { segment_id: 3, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 30.0, descent: 10.0, start_node: n3, end_node: n4 });
+        graph.add_edge(n4, n3, EdgeData { segment_id: 3, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 10.0, descent: 30.0, start_node: n4, end_node: n3 });
+        graph.add_edge(n4, n1, EdgeData { segment_id: 4, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 40.0, descent: 0.0, start_node: n4, end_node: n1 });
+        graph.add_edge(n1, n4, EdgeData { segment_id: 4, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 0.0, descent: 40.0, start_node: n1, end_node: n4 });
+        graph.add_edge(n1, n3, EdgeData { segment_id: 5, path: vec![], distance: 1414.0, weighted_distance: 1414.0, ascent: 5.0, descent: 5.0, start_node: n1, end_node: n3 });
+        graph.add_edge(n3, n1, EdgeData { segment_id: 5, path: vec![], distance: 1414.0, weighted_distance: 1414.0, ascent: 5.0, descent: 5.0, start_node: n3, end_node: n1 });
         (graph, n1)
     }
 
     #[test]
     fn test_new_generate_route_returns_a_route() {
-        let (graph, start_node) = create_test_graph();
-        let route = generate_route(&graph, start_node, 10000.0, 100);
+        let (mut graph, start_node) = create_test_graph();
+        let route = generate_route(&mut graph, start_node, 10000.0, 100);
         assert!(route.is_some());
         let route_path = route.unwrap();
         assert!(!route_path.is_empty());
