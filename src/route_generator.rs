@@ -147,7 +147,8 @@ fn find_alternative_path(
                 return f64::INFINITY;
             }
 
-            e.weight().distance / (e.weight().ascent + 1.0)
+            let cost = e.weight().distance * e.weight().penalty;
+            cost / (e.weight().ascent + 1.0)
         },
         |n| {
             let p1 = graph[n];
@@ -211,20 +212,20 @@ mod tests {
         let n3 = graph.add_node(Point { lat: 0.1, lon: 0.1 });
         let n4 = graph.add_node(Point { lat: 0.1, lon: 0.0 });
 
-        graph.add_edge(n1, n2, EdgeData { segment_id: 1, path: vec![], distance: 1000.0, ascent: 10.0, descent: 5.0 });
-        graph.add_edge(n2, n1, EdgeData { segment_id: 1, path: vec![], distance: 1000.0, ascent: 5.0, descent: 10.0 });
+        graph.add_edge(n1, n2, EdgeData { segment_id: 1, path: vec![], distance: 1000.0, ascent: 10.0, descent: 5.0, penalty: 1.0 });
+        graph.add_edge(n2, n1, EdgeData { segment_id: 1, path: vec![], distance: 1000.0, ascent: 5.0, descent: 10.0, penalty: 1.0 });
 
-        graph.add_edge(n2, n3, EdgeData { segment_id: 2, path: vec![], distance: 1000.0, ascent: 20.0, descent: 0.0 });
-        graph.add_edge(n3, n2, EdgeData { segment_id: 2, path: vec![], distance: 1000.0, ascent: 0.0, descent: 20.0 });
+        graph.add_edge(n2, n3, EdgeData { segment_id: 2, path: vec![], distance: 1000.0, ascent: 20.0, descent: 0.0, penalty: 1.0 });
+        graph.add_edge(n3, n2, EdgeData { segment_id: 2, path: vec![], distance: 1000.0, ascent: 0.0, descent: 20.0, penalty: 1.0 });
 
-        graph.add_edge(n3, n4, EdgeData { segment_id: 3, path: vec![], distance: 1000.0, ascent: 30.0, descent: 10.0 });
-        graph.add_edge(n4, n3, EdgeData { segment_id: 3, path: vec![], distance: 1000.0, ascent: 10.0, descent: 30.0 });
+        graph.add_edge(n3, n4, EdgeData { segment_id: 3, path: vec![], distance: 1000.0, ascent: 30.0, descent: 10.0, penalty: 1.0 });
+        graph.add_edge(n4, n3, EdgeData { segment_id: 3, path: vec![], distance: 1000.0, ascent: 10.0, descent: 30.0, penalty: 1.0 });
 
-        graph.add_edge(n4, n1, EdgeData { segment_id: 4, path: vec![], distance: 1000.0, ascent: 40.0, descent: 0.0 });
-        graph.add_edge(n1, n4, EdgeData { segment_id: 4, path: vec![], distance: 1000.0, ascent: 0.0, descent: 40.0 });
+        graph.add_edge(n4, n1, EdgeData { segment_id: 4, path: vec![], distance: 1000.0, ascent: 40.0, descent: 0.0, penalty: 1.0 });
+        graph.add_edge(n1, n4, EdgeData { segment_id: 4, path: vec![], distance: 1000.0, ascent: 0.0, descent: 40.0, penalty: 1.0 });
 
-        graph.add_edge(n1, n3, EdgeData { segment_id: 5, path: vec![], distance: 1414.0, ascent: 5.0, descent: 5.0 });
-        graph.add_edge(n3, n1, EdgeData { segment_id: 5, path: vec![], distance: 1414.0, ascent: 5.0, descent: 5.0 });
+        graph.add_edge(n1, n3, EdgeData { segment_id: 5, path: vec![], distance: 1414.0, ascent: 5.0, descent: 5.0, penalty: 1.0 });
+        graph.add_edge(n3, n1, EdgeData { segment_id: 5, path: vec![], distance: 1414.0, ascent: 5.0, descent: 5.0, penalty: 1.0 });
 
         (graph, n1)
     }
