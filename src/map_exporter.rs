@@ -3,106 +3,6 @@ use geo::{Distance, Haversine, InterpolatePoint, Point as GeoPoint};
 use petgraph::graph::NodeIndex;
 use std::collections::HashMap;
 
-// This function is not used by the main route exporter, but might be useful for debugging.
-pub fn export_combined_map(
-    top_edges: &[EdgeData],
-    parking_locations: &[Point],
-    title: &str,
-) -> String {
-    let edge_polylines: Vec<String> = top_edges
-        .iter()
-        .enumerate()
-        .map(|(i, edge)| {
-            let coordinates: Vec<String> = edge
-                .path
-                .iter()
-                .map(|p| format!("[{}, {}]", p.lat, p.lon))
-                .collect();
-            let js_coordinates = format!("[{}]", coordinates.join(", "));
-            let color = "red";
-            let popup_content = format!(
-                "<b>Edge #{}</b><br>Distance: {:.2}m<br>Ascent: {:.2}m<br>Descent: {:.2}m",
-                i + 1,
-                edge.distance,
-                edge.ascent,
-                edge.descent
-            );
-
-            format!(
-                "L.polyline({js_coordinates}, {{ color: '{color}' }}).bindPopup('{popup_content}')",
-                js_coordinates = js_coordinates,
-                color = color,
-                popup_content = popup_content
-            )
-        })
-        .collect();
-
-    let parking_markers: Vec<String> = parking_locations
-        .iter()
-        .map(|p| format!("L.marker([{}, {}]).bindPopup('Parking')", p.lat, p.lon))
-        .collect();
-
-    let all_layers = [edge_polylines, parking_markers].concat();
-
-    format!(
-        r#"
-<!DOCTYPE html>
-<html>
-<head>
-    <title>{title}</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"/>
-    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
-    <style>
-        html, body {{ height: 100%; margin: 0; }}
-        #map {{ width: 100%; height: 100%; }}
-    </style>
-</head>
-<body>
-
-<div id="map"></div>
-
-<script>
-    var map = L.map('map');
-
-    var osm = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-    }});
-
-    var opentopo = L.tileLayer('https://{{s}}.tile.opentopomap.org/{{z}}/{{x}}/{{y}}.png', {{
-        attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, SRTM | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)'
-    }});
-
-    opentopo.addTo(map);
-
-    var baseMaps = {{
-        "OpenStreetMap": osm,
-        "OpenTopoMap": opentopo
-    }};
-
-    var layers = [
-        {layers_script}
-    ];
-
-    var featureGroup = L.featureGroup(layers).addTo(map);
-    L.control.layers(baseMaps).addTo(map);
-
-    if (layers.length > 0) {{
-        map.fitBounds(featureGroup.getBounds().pad(0.1));
-    }} else {{
-        map.setView([51.505, -0.09], 13);
-    }}
-</script>
-
-</body>
-</html>
-"#,
-        title = title,
-        layers_script = all_layers.join(",\n")
-    )
-}
-
 fn get_point_at_ratio(path: &[Point], ratio: f64) -> Option<Point> {
     if path.len() < 2 {
         return None;
@@ -197,7 +97,7 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
     let mut pass_num_tracker = HashMap::<(NodeIndex, NodeIndex), u32>::new();
     let mut layer_group_definitions = Vec::new();
     let mut overlay_map_entries = Vec::new();
-    let mut all_route_groups = Vec::new();
+    let mut all_layers_for_bounds = Vec::new();
 
     for (i, route) in routes.iter().enumerate() {
         let route_color = colors[i % colors.len()];
@@ -227,22 +127,26 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
                 i + 1, total_route_dist_km, total_route_ascent_m, segment.segment_id, segment.distance, segment.ascent
             ).replace("'", "\\'");
 
-            route_specific_layers.push(format!(
+            let polyline_str = format!(
                 "L.polyline({js_coordinates}, {{ color: '{color}', weight: 3 }}).bindPopup('{popup_content}')",
                 js_coordinates = js_coordinates, color = route_color, popup_content = popup_content
-            ));
+            );
+
+            route_specific_layers.push(polyline_str.clone());
+            all_layers_for_bounds.push(polyline_str);
 
             if let Some(marker_point) = get_point_at_ratio(&segment.path, 0.75) {
-                 route_specific_layers.push(format!(
+                 let marker_str = format!(
                     "L.circleMarker([{}, {}], {{ radius: 2, color: '{color}', fillColor: '{color}', fillOpacity: 1.0 }})",
                     marker_point.lat, marker_point.lon, color = route_color
-                ));
+                );
+                 route_specific_layers.push(marker_str.clone());
+                 all_layers_for_bounds.push(marker_str);
             }
         }
 
         let route_group_var = format!("route{}Group", i);
         layer_group_definitions.push(format!("var {} = L.layerGroup([{}]);", route_group_var, route_specific_layers.join(", ")));
-        all_route_groups.push(route_group_var.clone());
 
         let overlay_label = format!("Route #{} ({:.2} km, {:.0}m ascent)", i + 1, total_route_dist_km, total_route_ascent_m);
         overlay_map_entries.push(format!("\"{}\": {}", overlay_label.replace("'", "\\'"), route_group_var));
@@ -251,12 +155,25 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
     let script_logic = format!(
         r#"
     var map = L.map('map');
+
+    var standard = L.tileLayer('https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    }});
+
     var opentopo = L.tileLayer('https://{{s}}.tile.opentopomap.org/{{z}}/{{x}}/{{y}}.png', {{
         attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, SRTM | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)'
-    }}).addTo(map);
+    }});
+
+    var cyclosm = L.tileLayer('https://{{s}}.tile-cyclosm.openstreetmap.fr/cyclosm/{{z}}/{{x}}/{{y}}.png', {{
+        attribution: '<a href="https://github.com/cyclosm/cyclosm-cartocss-style/releases" title="CyclOSM - Open Bicycle render">CyclOSM</a> | Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    }});
+
+    opentopo.addTo(map);
 
     var baseMaps = {{
-        "OpenTopoMap": opentopo
+        "Standard": standard,
+        "OpenTopoMap": opentopo,
+        "CyclOSM": cyclosm
     }};
 
     {layer_group_definitions}
@@ -265,24 +182,24 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
         {overlay_map_entries}
     }};
 
-    L.control.layers(baseMaps, overlayMaps).addTo(map);
+    var allLayers = [{all_layers_for_bounds}];
+    var boundsGroup = L.featureGroup(allLayers);
 
-    var allRouteGroups = [{all_route_groups}];
-    var bounds = L.latLngBounds();
-
-    if (allRouteGroups.length > 0) {{
-        allRouteGroups.forEach(function(group) {{
-            group.addTo(map);
-            bounds.extend(group.getBounds());
-        }});
-        map.fitBounds(bounds.pad(0.1));
+    if (boundsGroup.getLayers().length > 0) {{
+        map.fitBounds(boundsGroup.getBounds().pad(0.1));
     }} else {{
         map.setView([51.505, -0.09], 13);
     }}
+
+    L.control.layers(baseMaps, overlayMaps).addTo(map);
+    // Add all layers to the map by default
+    Object.values(overlayMaps).forEach(function(layer) {{
+        layer.addTo(map);
+    }});
 "#,
         layer_group_definitions = layer_group_definitions.join("\n    "),
         overlay_map_entries = overlay_map_entries.join(",\n        "),
-        all_route_groups = all_route_groups.join(", ")
+        all_layers_for_bounds = all_layers_for_bounds.join(",\n")
     );
 
     format!(

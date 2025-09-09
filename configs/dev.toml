@@ -4,7 +4,6 @@ osm_path = "data/oxfordshire-250907.osm.pbf"
 srtm_path = "data/oxfordshire_ish.SRTMGL1.tif"
 map_offset_scale = 0.000060
 
-# Global configuration for the GoatTrails route generator
 [algorithm]
 n_candidate_segments = 100
 search_radius_divisor = 4.0
