@@ -17,8 +17,6 @@ pub fn generate_route(
 ) -> Option<Vec<EdgeData>> {
     println!("Starting route generation with greedy insertion heuristic...");
 
-    // Step 3: Route Calculation using Greedy Insertion
-    println!("\nCalculating best route using greedy insertion...");
     let mut tour: Vec<CandidateSegment> = Vec::new();
     let mut current_properties = (0.0, 0.0);
 
@@ -43,38 +41,39 @@ pub fn generate_route(
             let candidate = &remaining_candidates[candidate_idx];
 
             if tour.is_empty() {
-                 if let Some((dist, ascent)) = calculate_tour_properties_from_segments(start_node, &[candidate.clone()], actual_distance_matrix) {
+                if let Some((dist, ascent)) = calculate_tour_properties_from_segments(start_node, &[candidate.clone()], actual_distance_matrix) {
                     if dist <= target_distance {
                         if let Some((cost, _)) = calculate_tour_properties_from_segments(start_node, &[candidate.clone()], cost_matrix) {
-                            best_insertion_info = Some((candidate_idx, 0, cost, (dist, ascent)));
-                        }
-                    }
-                }
-                continue;
-            }
-
-            let mut best_insertion_for_this_candidate: Option<(usize, f64, (f64,f64))> = None;
-
-            for i in 0..=tour.len() {
-                let mut temp_tour = tour.clone();
-                temp_tour.insert(i, candidate.clone());
-
-                if let Some((new_dist, new_ascent)) = calculate_tour_properties_from_segments(start_node, &temp_tour, actual_distance_matrix) {
-                    if new_dist <= target_distance {
-                        if let Some((new_cost, _)) = calculate_tour_properties_from_segments(start_node, &temp_tour, cost_matrix) {
-                            let (current_cost, _) = calculate_tour_properties_from_segments(start_node, &tour, cost_matrix).unwrap_or((0.0, 0.0));
-                            let cost = new_cost - current_cost;
-                            if cost < best_insertion_for_this_candidate.map_or(f64::INFINITY, |(_, c, _)| c) {
-                                best_insertion_for_this_candidate = Some((i, cost, (new_dist, new_ascent)));
+                            if cost < best_insertion_info.map_or(f64::INFINITY, |(_, _, c, _)| c) {
+                                best_insertion_info = Some((candidate_idx, 0, cost, (dist, ascent)));
                             }
                         }
                     }
                 }
-            }
+            } else {
+                let mut best_insertion_for_this_candidate: Option<(usize, f64, (f64, f64))> = None;
 
-            if let Some((insertion_idx, cost, new_props)) = best_insertion_for_this_candidate {
-                if cost < best_insertion_info.map_or(f64::INFINITY, |(_, _, c, _)| c) {
-                    best_insertion_info = Some((candidate_idx, insertion_idx, cost, new_props));
+                for i in 0..=tour.len() {
+                    let mut temp_tour = tour.clone();
+                    temp_tour.insert(i, candidate.clone());
+
+                    if let Some((new_dist, new_ascent)) = calculate_tour_properties_from_segments(start_node, &temp_tour, actual_distance_matrix) {
+                        if new_dist <= target_distance {
+                            if let Some((new_cost, _)) = calculate_tour_properties_from_segments(start_node, &temp_tour, cost_matrix) {
+                                let (current_cost, _) = calculate_tour_properties_from_segments(start_node, &tour, cost_matrix).unwrap_or((0.0, 0.0));
+                                let cost = new_cost - current_cost;
+                                if cost < best_insertion_for_this_candidate.map_or(f64::INFINITY, |(_, c, _)| c) {
+                                    best_insertion_for_this_candidate = Some((i, cost, (new_dist, new_ascent)));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some((insertion_idx, cost, new_props)) = best_insertion_for_this_candidate {
+                    if cost < best_insertion_info.map_or(f64::INFINITY, |(_, _, c, _)| c) {
+                        best_insertion_info = Some((candidate_idx, insertion_idx, cost, new_props));
+                    }
                 }
             }
         }
@@ -85,8 +84,6 @@ pub fn generate_route(
             current_properties = new_props;
             bar.set_message(format!("Dist: {:.2}km, Ascent: {:.1}m", current_properties.0 / 1000.0, current_properties.1));
         } else {
-            // No candidate from the M pool could be inserted.
-            // To prevent getting stuck in an infinite loop, we break.
             println!("No insertable candidates found in this iteration. Finalizing tour.");
             break;
         }
@@ -100,10 +97,8 @@ pub fn generate_route(
     println!("Final tour has {} segments.", tour.len());
     println!("Final route estimate: Distance = {:.2}km, Ascent = {:.2}m", current_properties.0 / 1000.0, current_properties.1);
 
-    // Step 4: Reconstruct final path
     println!("\nReconstructing final route path...");
     let final_path_nodes = {
-        // Create a set of discouraged reverse edges
         let discouraged_edges: HashSet<(NodeIndex, NodeIndex)> = tour
             .iter()
             .map(|segment| (segment.end_node, segment.start_node))
@@ -201,9 +196,10 @@ fn build_edge_data_path(graph: &RouteGraph, nodes: &[NodeIndex]) -> Vec<EdgeData
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Point, EdgeData, RouteGraph};
+    use crate::{Point, EdgeData, RouteGraph, AlgorithmConfig, CandidateSegment};
     use petgraph::graph::NodeIndex;
     use petgraph::algo::dijkstra;
+    use std::collections::{HashMap, HashSet};
 
     fn create_test_graph() -> (RouteGraph, NodeIndex) {
         let mut graph = RouteGraph::new();
@@ -251,8 +247,6 @@ mod tests {
             }
         }
 
-        // For the test, we'll just make the cost matrix a clone of the actual one,
-        // as we are not testing the penalty logic here, just the route generation.
         let cost_matrix = actual_distance_matrix.clone();
 
         let config = AlgorithmConfig {
@@ -269,5 +263,61 @@ mod tests {
         assert!(!route_path.is_empty());
         let total_dist: f64 = route_path.iter().map(|e| e.distance).sum();
         assert!(total_dist > 0.0);
+    }
+
+    #[test]
+    fn test_m_from_k_candidate_selection() {
+        let (mut graph, start_node) = create_test_graph();
+        let n1 = start_node;
+        let n2 = graph.node_indices().nth(1).unwrap();
+        let n3 = graph.node_indices().nth(2).unwrap();
+        let n4 = graph.node_indices().nth(3).unwrap();
+
+        // good_candidate has a better insertion cost, but is ranked lower than bad_candidate
+        let good_candidate = CandidateSegment { start_node: n1, end_node: n2, distance: 1000.0, ascent: 10.0 };
+        let bad_candidate = CandidateSegment { start_node: n3, end_node: n4, distance: 1000.0, ascent: 30.0 };
+
+        let top_candidates = vec![bad_candidate.clone(), good_candidate.clone()];
+
+        // Make the bad candidate have a high cost
+        graph.edge_weight_mut(graph.find_edge(n1, n3).unwrap()).unwrap().weighted_distance = 10000.0;
+
+        let mut key_nodes: HashSet<NodeIndex> = top_candidates.iter().flat_map(|s| [s.start_node, s.end_node]).collect();
+        key_nodes.insert(start_node);
+        let key_nodes_vec: Vec<NodeIndex> = key_nodes.into_iter().collect();
+
+        let mut actual_distance_matrix = HashMap::new();
+        for &from_node in &key_nodes_vec {
+            let shortest_paths = dijkstra(&graph, from_node, None, |e| e.weight().distance);
+            for &to_node in &key_nodes_vec {
+                if let Some(distance) = shortest_paths.get(&to_node) {
+                    actual_distance_matrix.insert((from_node, to_node), *distance);
+                }
+            }
+        }
+
+        let mut cost_matrix = HashMap::new();
+        for &from_node in &key_nodes_vec {
+            let shortest_paths = dijkstra(&graph, from_node, None, |e| e.weight().weighted_distance);
+            for &to_node in &key_nodes_vec {
+                if let Some(distance) = shortest_paths.get(&to_node) {
+                    cost_matrix.insert((from_node, to_node), *distance);
+                }
+            }
+        }
+
+        let config = AlgorithmConfig {
+            n_candidate_segments: 500,
+            search_radius_divisor: 4.0,
+            k_top_candidates_to_consider: 2, // K=2, so both are considered
+            m_candidates_to_evaluate: 2, // M=2, so both are evaluated
+            penalty_factor: 1.0,
+        };
+
+        let route = generate_route(&graph, start_node, 20000.0, &top_candidates, &actual_distance_matrix, &cost_matrix, &config).unwrap();
+
+        // The route should contain the good candidate's segment (1->2, segment 1),
+        // because it has a much lower insertion cost, even though the bad candidate is ranked higher.
+        assert!(route.iter().any(|seg| seg.segment_id == 1));
     }
 }

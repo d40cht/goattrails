@@ -83,6 +83,14 @@ pub struct EdgeData {
 
 type RouteGraph = Graph<Point, EdgeData, petgraph::Directed>;
 
+#[derive(Debug, Clone)]
+pub struct CandidateSegment {
+    pub start_node: NodeIndex,
+    pub end_node: NodeIndex,
+    pub distance: f64,
+    pub ascent: f64,
+}
+
 fn is_valid_way<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> bool {
     let mut highway_val: Option<&str> = None;
     let mut access_val: Option<&str> = None;
@@ -365,14 +373,6 @@ fn find_nearest_node(graph: &RouteGraph, point: &Point) -> Option<NodeIndex> {
     })
 }
 
-#[derive(Debug, Clone)]
-pub struct CandidateSegment {
-    pub start_node: NodeIndex,
-    pub end_node: NodeIndex,
-    pub distance: f64,
-    pub ascent: f64,
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     println!("Loading config from: {}", args.config);
@@ -389,7 +389,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         if let Some(start_node) = find_nearest_node(&graph, &start_point) {
             println!("Found nearest graph node. Identifying candidate segments...");
-            const MIN_ASCENT_METERS: f64 = 5.0; // TODO: Move to config? For now, keep as is.
+            const MIN_ASCENT_METERS: f64 = 5.0;
 
             let start_point_coords = graph.node_weight(start_node).unwrap();
             let start_point_geo = GeoPoint::new(start_point_coords.lon, start_point_coords.lat);
@@ -427,11 +427,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("Identified {} candidate segments. Applying penalties for APSP calculation...", top_candidates.len());
 
             for candidate in &top_candidates {
-                // Penalize the forward edge
                 if let Some(edge_index) = graph.find_edge(candidate.start_node, candidate.end_node) {
                     graph[edge_index].weighted_distance = graph[edge_index].distance * config.algorithm.penalty_factor;
                 }
-                // Penalize the reverse edge
                 if let Some(edge_index) = graph.find_edge(candidate.end_node, candidate.start_node) {
                     graph[edge_index].weighted_distance = graph[edge_index].distance * config.algorithm.penalty_factor;
                 }
@@ -443,7 +441,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let key_nodes_vec: Vec<NodeIndex> = key_nodes.into_iter().collect();
                 let immutable_graph: &RouteGraph = &graph;
 
-                // 1. Calculate actual_distance_matrix (no penalties)
                 println!("\nPre-computing actual shortest paths between key nodes...");
                 let mut actual_distance_matrix = HashMap::new();
                 let bar1 = ProgressBar::new(key_nodes_vec.len() as u64);
@@ -459,7 +456,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
                 bar1.finish_with_message("Actual distance matrix complete.");
 
-                // 2. Calculate cost_matrix (with penalties)
                 println!("\nPre-computing cost-based shortest paths between key nodes...");
                 let mut cost_matrix = HashMap::new();
                 let bar2 = ProgressBar::new(key_nodes_vec.len() as u64);
@@ -478,11 +474,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             };
 
             for candidate in &top_candidates {
-                // Reset the forward edge
                 if let Some(edge_index) = graph.find_edge(candidate.start_node, candidate.end_node) {
                     graph[edge_index].weighted_distance = graph[edge_index].distance;
                 }
-                // Reset the reverse edge
                 if let Some(edge_index) = graph.find_edge(candidate.end_node, candidate.start_node) {
                     graph[edge_index].weighted_distance = graph[edge_index].distance;
                 }
