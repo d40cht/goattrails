@@ -99,3 +99,90 @@ pub fn export_combined_map(
         layers_script = all_layers.join(",\n")
     )
 }
+
+pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str) -> String {
+    let colors = ["blue", "red", "green", "purple", "orange", "darkred", "lightred", "darkblue", "cadetblue"];
+
+    let route_polylines: Vec<String> = routes
+        .iter()
+        .enumerate()
+        .map(|(i, route)| {
+            let mut all_points: Vec<Point> = route
+                .iter()
+                .flat_map(|edge| edge.path.iter().copied())
+                .collect();
+            all_points.dedup();
+
+            let js_points: Vec<String> = all_points
+                .iter()
+                .map(|p| format!("[{}, {}]", p.lat, p.lon))
+                .collect();
+
+            let js_coordinates = format!("[{}]", js_points.join(", "));
+            let color = colors[i % colors.len()];
+
+            let total_dist: f64 = route.iter().map(|e| e.distance).sum();
+            let total_ascent: f64 = route.iter().map(|e| e.ascent).sum();
+            let total_descent: f64 = route.iter().map(|e| e.descent).sum();
+
+            let popup_content = format!(
+                "<b>Route #{}</b><br>Distance: {:.2}km<br>Ascent: {:.2}m<br>Descent: {:.2}m",
+                i + 1,
+                total_dist / 1000.0,
+                total_ascent,
+                total_descent
+            );
+
+            format!(
+                "L.polyline({js_coordinates}, {{ color: '{color}' }}).bindPopup('{popup_content}')",
+                js_coordinates = js_coordinates,
+                color = color,
+                popup_content = popup_content
+            )
+        })
+        .collect();
+
+    let layers_script = route_polylines.join(",\n");
+
+    format!(
+        r#"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{title}</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <style>
+        html, body {{ height: 100%; margin: 0; }}
+        #map {{ width: 100%; height: 100%; }}
+    </style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+    var map = L.map('map');
+    var opentopo = L.tileLayer('https://{{s}}.tile.opentopomap.org/{{z}}/{{x}}/{{y}}.png', {{
+        attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, SRTM | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)'
+    }}).addTo(map);
+
+    var layers = [
+        {layers_script}
+    ];
+
+    var featureGroup = L.featureGroup(layers).addTo(map);
+
+    if (layers.length > 0) {{
+        map.fitBounds(featureGroup.getBounds().pad(0.1));
+    }} else {{
+        map.setView([51.505, -0.09], 13);
+    }}
+</script>
+</body>
+</html>
+"#,
+        title = title,
+        layers_script = layers_script
+    )
+}
