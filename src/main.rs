@@ -74,6 +74,7 @@ pub struct Point {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HighwayType {
     Trail,
+    Pedestrian,
     QuietRoad,
     PavedRoad,
     MajorRoad,
@@ -123,7 +124,8 @@ fn get_highway_type<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Optio
 
     if let Some(highway) = highway_val {
         return match highway {
-            "path" | "footway" | "track" | "bridleway" | "cycleway" => Some(HighwayType::Trail),
+            "path" | "bridleway" | "track"  => Some(HighwayType::Trail),
+            "footway" | "cycleway" => Some(HighwayType::Pedestrian),
             "residential" | "unclassified" => Some(HighwayType::QuietRoad),
             "tertiary" => Some(HighwayType::PavedRoad),
             "primary" | "trunk" => Some(HighwayType::MajorRoad),
@@ -377,6 +379,7 @@ fn build_graph(osm_path: &str, srtm_path: &str, highway_multipliers: &HashMap<St
     for edge in graph.edge_weights_mut() {
         let multiplier_key = match edge.highway_type {
             HighwayType::Trail => "trail",
+            HighwayType::Pedestrian => "pedestrian",
             HighwayType::QuietRoad => "quiet_road",
             HighwayType::PavedRoad => "paved_road",
             HighwayType::MajorRoad => "major_road",
