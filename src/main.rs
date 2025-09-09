@@ -1,4 +1,5 @@
-use geo::{HaversineDistance, HaversineIntermediate, Point as GeoPoint};
+use geo::prelude::*;
+use geo::{Point as GeoPoint, Haversine};
 use ndarray::Array2;
 use osmpbf::{Element, ElementReader};
 use petgraph::graph::{Graph, NodeIndex};
@@ -250,7 +251,7 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
         for points in edge.path.windows(2) {
             let p1 = GeoPoint::new(points[0].lon, points[0].lat);
             let p2 = GeoPoint::new(points[1].lon, points[1].lat);
-            let segment_distance = p1.haversine_distance(&p2);
+            let segment_distance = Haversine.distance(p1, p2);
             distance += segment_distance;
 
             let num_steps = (segment_distance / INTERPOLATION_DISTANCE_M).ceil() as usize;
@@ -258,7 +259,7 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
 
             for i in 0..=num_steps {
                 let fraction = if num_steps > 0 { i as f64 / num_steps as f64 } else { 0.0 };
-                let intermediate_geo_point = p1.haversine_intermediate(&p2, fraction);
+                let intermediate_geo_point = Haversine.point_at_ratio_between(p1, p2, fraction);
                 let intermediate_point = Point { lat: intermediate_geo_point.y(), lon: intermediate_geo_point.x() };
 
                 if let Some(elevation) = get_interpolated_elevation(&intermediate_point, &elevation_data, &geo_transform) {
@@ -301,11 +302,12 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
 }
 
 fn find_nearest_node(graph: &RouteGraph, point: &Point) -> Option<NodeIndex> {
+    let point_geo = GeoPoint::new(point.lon, point.lat);
     graph.node_indices().min_by(|&a, &b| {
         let p_a = graph[a];
         let p_b = graph[b];
-        let dist_a = GeoPoint::new(p_a.lon, p_a.lat).haversine_distance(&GeoPoint::new(point.lon, point.lat));
-        let dist_b = GeoPoint::new(p_b.lon, p_b.lat).haversine_distance(&GeoPoint::new(point.lon, point.lat));
+        let dist_a = Haversine.distance(GeoPoint::new(p_a.lon, p_a.lat), point_geo);
+        let dist_b = Haversine.distance(GeoPoint::new(p_b.lon, p_b.lat), point_geo);
         dist_a.partial_cmp(&dist_b).unwrap()
     })
 }

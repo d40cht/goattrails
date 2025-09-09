@@ -4,7 +4,8 @@ use petgraph::algo::astar;
 use petgraph::visit::EdgeRef;
 use rand::Rng;
 use rand::seq::SliceRandom;
-use geo::HaversineDistance;
+use geo::prelude::*;
+use geo::Haversine;
 use std::collections::HashSet;
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -82,12 +83,9 @@ pub fn generate_route(
 
             let original_segment_dist = calculate_route_properties(graph, &current_route.nodes[segment_start_idx..=segment_end_idx]).0;
 
-            let mut forbidden_segment_ids = HashSet::new();
-            if let Some(edge_to_replace) = graph.find_edge(u, v) {
-                forbidden_segment_ids.insert(graph[edge_to_replace].segment_id);
-            }
+            let forbidden_nodes: HashSet<NodeIndex> = current_route.nodes.iter().cloned().collect();
 
-            if let Some((new_path_nodes, (new_dist, new_ascent))) = find_alternative_path(graph, u, v, original_segment_dist, &forbidden_segment_ids) {
+            if let Some((new_path_nodes, (_new_dist, _new_ascent))) = find_alternative_path(graph, u, v, original_segment_dist, &forbidden_nodes) {
 
                 let mut potential_new_route_nodes = current_route.nodes.clone();
                 potential_new_route_nodes.splice(segment_start_idx..=segment_end_idx, new_path_nodes);
@@ -129,7 +127,7 @@ fn find_alternative_path(
     start: NodeIndex,
     end: NodeIndex,
     original_distance: f64,
-    forbidden_segment_ids: &HashSet<u32>,
+    forbidden_nodes: &HashSet<NodeIndex>,
 ) -> Option<(Vec<NodeIndex>, (f64, f64))> {
     let max_distance = original_distance * 4.0 + 1000.0;
     let end_point = graph[end];
@@ -139,26 +137,30 @@ fn find_alternative_path(
         start,
         |finish| finish == end,
         |e| {
-            if forbidden_segment_ids.contains(&e.weight().segment_id) {
+            // Prevent taking the direct edge back
+            if e.source() == start && e.target() == end {
                 return f64::INFINITY;
             }
-            let weight = e.weight();
-            weight.distance / (weight.ascent + 1.0)
+
+            let target_node = e.target();
+            if forbidden_nodes.contains(&target_node) && target_node != end {
+                return f64::INFINITY;
+            }
+
+            e.weight().distance / (e.weight().ascent + 1.0)
         },
         |n| {
             let p1 = graph[n];
             let p1_geo = geo::Point::new(p1.lon, p1.lat);
             let p2_geo = geo::Point::new(end_point.lon, end_point.lat);
-            p1_geo.haversine_distance(&p2_geo)
+            Haversine.distance(p1_geo, p2_geo)
         },
     );
 
-    if let Some((_, path_nodes)) = result {
-        if path_nodes.len() > 2 {
-            let (actual_dist, actual_ascent) = calculate_route_properties(graph, &path_nodes);
-            if actual_dist < max_distance {
-                return Some((path_nodes, (actual_dist, actual_ascent)));
-            }
+    if let Some((_total_dist, path_nodes)) = result {
+        let (actual_dist, actual_ascent) = calculate_route_properties(graph, &path_nodes);
+        if actual_dist < max_distance {
+            return Some((path_nodes, (actual_dist, actual_ascent)));
         }
     }
 
@@ -194,4 +196,58 @@ fn build_edge_data_path(graph: &RouteGraph, nodes: &[NodeIndex]) -> Vec<EdgeData
         }
     }
     path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Point, EdgeData, RouteGraph};
+    use petgraph::graph::NodeIndex;
+
+    fn create_test_graph() -> (RouteGraph, NodeIndex) {
+        let mut graph = RouteGraph::new();
+        let n1 = graph.add_node(Point { lat: 0.0, lon: 0.0 });
+        let n2 = graph.add_node(Point { lat: 0.0, lon: 0.1 });
+        let n3 = graph.add_node(Point { lat: 0.1, lon: 0.1 });
+        let n4 = graph.add_node(Point { lat: 0.1, lon: 0.0 });
+
+        graph.add_edge(n1, n2, EdgeData { segment_id: 1, path: vec![], distance: 1000.0, ascent: 10.0, descent: 5.0 });
+        graph.add_edge(n2, n1, EdgeData { segment_id: 1, path: vec![], distance: 1000.0, ascent: 5.0, descent: 10.0 });
+
+        graph.add_edge(n2, n3, EdgeData { segment_id: 2, path: vec![], distance: 1000.0, ascent: 20.0, descent: 0.0 });
+        graph.add_edge(n3, n2, EdgeData { segment_id: 2, path: vec![], distance: 1000.0, ascent: 0.0, descent: 20.0 });
+
+        graph.add_edge(n3, n4, EdgeData { segment_id: 3, path: vec![], distance: 1000.0, ascent: 30.0, descent: 10.0 });
+        graph.add_edge(n4, n3, EdgeData { segment_id: 3, path: vec![], distance: 1000.0, ascent: 10.0, descent: 30.0 });
+
+        graph.add_edge(n4, n1, EdgeData { segment_id: 4, path: vec![], distance: 1000.0, ascent: 40.0, descent: 0.0 });
+        graph.add_edge(n1, n4, EdgeData { segment_id: 4, path: vec![], distance: 1000.0, ascent: 0.0, descent: 40.0 });
+
+        graph.add_edge(n1, n3, EdgeData { segment_id: 5, path: vec![], distance: 1414.0, ascent: 5.0, descent: 5.0 });
+        graph.add_edge(n3, n1, EdgeData { segment_id: 5, path: vec![], distance: 1414.0, ascent: 5.0, descent: 5.0 });
+
+        (graph, n1)
+    }
+
+    #[test]
+    fn test_generate_route_returns_a_route() {
+        let (graph, start_node) = create_test_graph();
+        let route = generate_route(&graph, start_node, 5000.0, 100);
+        assert!(route.is_some());
+        let route_path = route.unwrap();
+        assert!(!route_path.is_empty());
+    }
+
+    #[test]
+    fn test_find_alternative_path() {
+        let (graph, n1) = create_test_graph();
+        let n2 = NodeIndex::new(1);
+        let forbidden_nodes = HashSet::new();
+        let result = find_alternative_path(&graph, n1, n2, 1000.0, &forbidden_nodes);
+        assert!(result.is_some());
+        let (path, (dist, ascent)) = result.unwrap();
+        assert_eq!(path, vec![NodeIndex::new(0), NodeIndex::new(2), NodeIndex::new(1)]);
+        assert!((dist - 2414.0).abs() < 1e-9);
+        assert!((ascent - 5.0).abs() < 1e-9);
+    }
 }
