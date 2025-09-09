@@ -1,9 +1,9 @@
+use std::collections::HashMap;
 use geo::prelude::*;
 use geo::{Point as GeoPoint, Haversine};
 use ndarray::Array2;
 use osmpbf::{Element, ElementReader};
 use petgraph::graph::{Graph, NodeIndex};
-use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::fs::File;
@@ -11,26 +11,45 @@ use std::io::Read;
 use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
 use petgraph::prelude::*;
-use rand::seq::SliceRandom;
+use clap::Parser;
 use serde::Deserialize;
 
 pub mod map_exporter;
 pub mod route_generator;
 
+/// Hilly route finder
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Path to the configuration file
+    #[arg(short, long, default_value_t = String::from("configs/dev.toml"))]
+    config: String,
+
+    /// Enable verbose output
+    #[arg(short, long, default_value_t = false)]
+    verbose: bool,
+}
+
 #[derive(Deserialize)]
-struct PointConfig {
+struct GlobalConfig {
+    osm_path: String,
+    srtm_path: String,
+    algorithm_iterations: usize,
+    map_offset_scale: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct RouteConfig {
     lat: f64,
     lon: f64,
+    target_distance_km: f64,
+    num_candidate_routes: usize,
 }
 
 #[derive(Deserialize)]
 struct Config {
-    target_distance_km: f64,
-    algorithm_iterations: usize,
-    route_candidates_to_generate: usize,
-    top_routes_to_display: usize,
-    start_point: Option<PointConfig>,
-    map_offset_scale: Option<f64>,
+    global: GlobalConfig,
+    routes: HashMap<String, RouteConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -332,81 +351,79 @@ fn find_nearest_node(graph: &RouteGraph, point: &Point) -> Option<NodeIndex> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let config_str = fs::read_to_string("config.toml")?;
+    let args = Args::parse();
+    println!("Loading config from: {}", args.config);
+    let config_str = fs::read_to_string(args.config)?;
     let config: Config = toml::from_str(&config_str)?;
 
-    let osm_path = "data/oxfordshire-250907.osm.pbf";
-    let srtm_path = "data/oxfordshire_ish.SRTMGL1.tif";
+    let (graph, _parking_locations) = build_graph(&config.global.osm_path, &config.global.srtm_path)?;
 
-    let (graph, parking_locations) = build_graph(osm_path, srtm_path)?;
+    for (route_name, route_config) in config.routes {
+        println!("\n--- Processing route: {} ---", route_name);
 
-    if parking_locations.is_empty() {
-        eprintln!("No parking locations found. Cannot generate a route.");
-        return Ok(());
-    }
+        let start_point = Point { lat: route_config.lat, lon: route_config.lon };
+        println!("Using configured start point: ({:.4}, {:.4})", start_point.lat, start_point.lon);
 
-    let start_point;
-    if let Some(sp_config) = config.start_point {
-        println!("\nUsing configured start point: ({:.4}, {:.4})", sp_config.lat, sp_config.lon);
-        start_point = Point { lat: sp_config.lat, lon: sp_config.lon };
-    } else {
-        println!("\nNo start point configured. Selecting a random parking location...");
-        let mut rng = rand::thread_rng();
-        let random_parking_spot = parking_locations.choose(&mut rng).unwrap();
-        println!("Selected random starting point near: ({:.4}, {:.4})", random_parking_spot.lat, random_parking_spot.lon);
-        start_point = *random_parking_spot;
-    }
+        if let Some(start_node) = find_nearest_node(&graph, &start_point) {
+            println!("Found nearest graph node to start route generation.");
 
-    if let Some(start_node) = find_nearest_node(&graph, &start_point) {
-        println!("Found nearest graph node to start route generation.");
-
-        let mut generated_routes = Vec::new();
-        for i in 0..config.route_candidates_to_generate {
-            println!("\n--- Generating Route Candidate {}/{} ---", i + 1, config.route_candidates_to_generate);
-            if let Some(route) = route_generator::generate_route(&graph, start_node, config.target_distance_km * 1000.0, config.algorithm_iterations) {
-                generated_routes.push(route);
-            } else {
-                eprintln!("Failed to generate a route candidate after {} iterations.", config.algorithm_iterations);
+            let mut generated_routes = Vec::new();
+            for i in 0..route_config.num_candidate_routes {
+                println!("\n--- Generating Route Candidate {}/{} for {} ---", i + 1, route_config.num_candidate_routes, route_name);
+                if let Some(route) = route_generator::generate_route(
+                    &graph,
+                    start_node,
+                    route_config.target_distance_km * 1000.0,
+                    config.global.algorithm_iterations,
+                ) {
+                    generated_routes.push(route);
+                } else {
+                    eprintln!("Failed to generate a route candidate after {} iterations.", config.global.algorithm_iterations);
+                }
             }
-        }
 
-        if generated_routes.is_empty() {
-            eprintln!("No routes were generated.");
-            return Ok(());
-        }
-
-        println!("\n--- All routes generated. Ranking by ascent... ---");
-
-        generated_routes.sort_by(|a, b| {
-            let a_ascent: f64 = a.iter().map(|e| e.ascent).sum();
-            let b_ascent: f64 = b.iter().map(|e| e.ascent).sum();
-            b_ascent.partial_cmp(&a_ascent).unwrap()
-        });
-
-        let top_routes: Vec<_> = generated_routes.into_iter().take(config.top_routes_to_display).collect();
-
-        println!("\n--- Top {} Routes ---", top_routes.len());
-        for (i, route) in top_routes.iter().enumerate() {
-            let total_dist: f64 = route.iter().map(|e| e.distance).sum();
-            let total_ascent: f64 = route.iter().map(|e| e.ascent).sum();
-            println!("\nRoute #{}: Distance = {:.2}km, Ascent = {:.2}m", i + 1, total_dist / 1000.0, total_ascent);
-            println!("{:<15} | {:<12} | {:<10} | {:<10}", "Segment ID", "Distance (m)", "Ascent (m)", "Descent (m)");
-            println!("{:-<16}|{:-<14}|{:-<12}|{:-<12}", "", "", "", "");
-            for segment in route {
-                println!("{:<15} | {:<12.2} | {:<10.2} | {:<10.2}", segment.segment_id, segment.distance, segment.ascent, segment.descent);
+            if generated_routes.is_empty() {
+                eprintln!("No routes were generated for {}.", route_name);
+                continue; // Skip to the next route
             }
+
+            println!("\n--- All routes generated for {}. Ranking by ascent... ---", route_name);
+
+            generated_routes.sort_by(|a, b| {
+                let a_ascent: f64 = a.iter().map(|e| e.ascent).sum();
+                let b_ascent: f64 = b.iter().map(|e| e.ascent).sum();
+                b_ascent.partial_cmp(&a_ascent).unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            // The number of routes to display is now the number of candidates generated
+            let top_routes = generated_routes;
+
+            println!("\n--- Top {} Routes for {} ---", top_routes.len(), route_name);
+            for (i, route) in top_routes.iter().enumerate() {
+                let total_dist: f64 = route.iter().map(|e| e.distance).sum();
+                let total_ascent: f64 = route.iter().map(|e| e.ascent).sum();
+                println!("\nRoute #{}: Distance = {:.2}km, Ascent = {:.2}m", i + 1, total_dist / 1000.0, total_ascent);
+
+                if args.verbose {
+                    println!("{:<15} | {:<12} | {:<10} | {:<10}", "Segment ID", "Distance (m)", "Ascent (m)", "Descent (m)");
+                    println!("{:-<16}|{:-<14}|{:-<12}|{:-<12}", "", "", "", "");
+                    for segment in route {
+                        println!("{:<15} | {:<12.2} | {:<10.2} | {:<10.2}", segment.segment_id, segment.distance, segment.ascent, segment.descent);
+                    }
+                }
+            }
+
+            fs::create_dir_all("vis")?;
+            let map_title = format!("Generated Routes for {}", route_name);
+            let offset_scale = config.global.map_offset_scale.unwrap_or(0.000060);
+            let html_content = map_exporter::export_route_map(&top_routes, &map_title, offset_scale);
+            let filename = format!("vis/{}.html", route_name);
+            fs::write(&filename, html_content)?;
+            println!("-> Saved top {} routes to {}", top_routes.len(), filename);
+
+        } else {
+            eprintln!("Could not find a nearby graph node to start from for route {}.", route_name);
         }
-
-        fs::create_dir_all("vis")?;
-        let map_title = "Top Generated Routes";
-        let offset_scale = config.map_offset_scale.unwrap_or(0.000060);
-        let html_content = map_exporter::export_route_map(&top_routes, map_title, offset_scale);
-        let filename = "vis/final_route.html";
-        fs::write(filename, html_content)?;
-        println!("-> Saved top {} routes to {}", top_routes.len(), filename);
-
-    } else {
-        eprintln!("Could not find a nearby graph node to start from.");
     }
 
     Ok(())
