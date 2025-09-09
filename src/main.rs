@@ -16,6 +16,7 @@ use tiff::tags::Tag;
 use clap::Parser;
 use serde::Deserialize;
 
+pub mod gpx_exporter;
 pub mod map_exporter;
 pub mod route_generator;
 
@@ -515,6 +516,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let top_routes = generated_routes;
 
             println!("\n--- Top {} Routes for {} ---", top_routes.len(), route_name);
+            fs::create_dir_all("vis")?;
             for (i, route) in top_routes.iter().enumerate() {
                 let total_dist: f64 = route.iter().map(|e| e.distance).sum();
                 let total_ascent: f64 = route.iter().map(|e| e.ascent).sum();
@@ -527,9 +529,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                         println!("{:<15} | {:<12.2} | {:<10.2} | {:<10.2}", segment.segment_id, segment.distance, segment.ascent, segment.descent);
                     }
                 }
+                // GPX Export
+                if let Err(e) = gpx_exporter::export_gpx(route, &route_name, i) {
+                    eprintln!("Failed to export GPX for route {}_{}: {}", route_name, i, e);
+                }
             }
 
-            fs::create_dir_all("vis")?;
             let map_title = format!("Generated Routes for {}", route_name);
             let offset_scale = config.global.map_offset_scale.unwrap_or(0.000060);
             let html_content = map_exporter::export_route_map(&top_routes, &map_title, offset_scale);

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+gpx = "0.10.0"
 geotiff = "0.1.0"
 geo = "0.31.0"
 osmpbf = "0.3.6"
