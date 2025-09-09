@@ -168,7 +168,7 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
         attribution: '<a href="https://github.com/cyclosm/cyclosm-cartocss-style/releases" title="CyclOSM - Open Bicycle render">CyclOSM</a> | Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     }});
 
-    opentopo.addTo(map);
+    cyclosm.addTo(map);
 
     var baseMaps = {{
         "Standard": standard,
@@ -191,11 +191,83 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
         map.setView([51.505, -0.09], 13);
     }}
 
-    L.control.layers(baseMaps, overlayMaps).addTo(map);
-    // Add all layers to the map by default
-    Object.values(overlayMaps).forEach(function(layer) {{
-        layer.addTo(map);
+    var layerControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
+
+    // --- Custom Controls Logic ---
+    var overlayKeys = Object.keys(overlayMaps);
+
+    // 1. Bulk action buttons
+    document.getElementById('show-all-btn').addEventListener('click', function() {{
+        overlayKeys.forEach(function(key) {{
+            map.addLayer(overlayMaps[key]);
+        }});
     }});
+
+    document.getElementById('hide-all-btn').addEventListener('click', function() {{
+        overlayKeys.forEach(function(key) {{
+            map.removeLayer(overlayMaps[key]);
+        }});
+    }});
+
+    // 2. Radio button logic
+    var radioContainer = document.getElementById('route-radio-buttons');
+
+    // "None" option
+    var noneRadio = document.createElement('input');
+    noneRadio.type = 'radio';
+    noneRadio.id = 'radio-none';
+    noneRadio.name = 'route-selector';
+    noneRadio.checked = true;
+    radioContainer.appendChild(noneRadio);
+    var noneLabel = document.createElement('label');
+    noneLabel.htmlFor = 'radio-none';
+    noneLabel.textContent = 'None';
+    radioContainer.appendChild(noneLabel);
+    radioContainer.appendChild(document.createElement('br'));
+
+    noneRadio.addEventListener('change', function() {{
+        if (this.checked) {{
+            overlayKeys.forEach(function(key) {{
+                map.removeLayer(overlayMaps[key]);
+            }});
+        }}
+    }});
+
+    // Route-specific options
+    overlayKeys.forEach(function(key, i) {{
+        var radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.id = 'radio-' + i;
+        radio.name = 'route-selector';
+        radio.value = key;
+        radioContainer.appendChild(radio);
+
+        var label = document.createElement('label');
+        label.htmlFor = 'radio-' + i;
+        label.textContent = key;
+        radioContainer.appendChild(label);
+        radioContainer.appendChild(document.createElement('br'));
+
+        radio.addEventListener('change', function() {{
+            if (this.checked) {{
+                // First, remove all other overlay layers
+                overlayKeys.forEach(function(otherKey) {{
+                    if (otherKey !== key) {{
+                        map.removeLayer(overlayMaps[otherKey]);
+                    }}
+                }});
+                // Then, add the selected layer
+                map.addLayer(overlayMaps[key]);
+            }}
+        }});
+    }});
+
+
+    // Hide the original checkbox-based layer control
+    layerControl.getContainer().style.display = 'none';
+
+    // Set initial state: show all layers by default
+    document.getElementById('show-all-btn').click();
 "#,
         layer_group_definitions = layer_group_definitions.join("\n    "),
         overlay_map_entries = overlay_map_entries.join(",\n        "),
@@ -215,10 +287,39 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
     <style>
         html, body {{ height: 100%; margin: 0; }}
         #map {{ width: 100%; height: 100%; }}
+        .custom-control-container {{
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            background: white;
+            padding: 5px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }}
+        .custom-control-container .control-row {{
+            margin-bottom: 5px;
+        }}
+        .custom-control-container button {{
+            margin-right: 5px;
+        }}
     </style>
 </head>
 <body>
+
 <div id="map"></div>
+<div class="custom-control-container leaflet-bar">
+    <div class="control-row">
+        <label>Bulk Actions:</label>
+        <button id="show-all-btn">Show All</button>
+        <button id="hide-all-btn">Hide All</button>
+    </div>
+    <div class="control-row">
+        <label>Select Route:</label>
+        <div id="route-radio-buttons"></div>
+    </div>
+</div>
+
 <script>
 {script_logic}
 </script>
