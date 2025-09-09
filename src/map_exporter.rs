@@ -267,15 +267,15 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
 
     L.control.layers(baseMaps, overlayMaps).addTo(map);
 
-    var allRouteLayers = [{all_route_groups}];
-    allRouteLayers.forEach(function(layer) {{
-        layer.addTo(map);
-    }});
+    var allRouteGroups = [{all_route_groups}];
+    var bounds = L.latLngBounds();
 
-    var featureGroup = L.featureGroup(allRouteLayers);
-
-    if (featureGroup.getLayers().length > 0) {{
-        map.fitBounds(featureGroup.getBounds().pad(0.1));
+    if (allRouteGroups.length > 0) {{
+        allRouteGroups.forEach(function(group) {{
+            group.addTo(map);
+            bounds.extend(group.getBounds());
+        }});
+        map.fitBounds(bounds.pad(0.1));
     }} else {{
         map.setView([51.505, -0.09], 13);
     }}
