@@ -184,25 +184,41 @@ fn offset_path(path: &[Point], pass_num: u32, total_passes: u32, offset_scale: f
 pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64) -> String {
     let colors = ["blue", "red", "green", "purple", "orange", "darkred", "lightred", "darkblue", "cadetblue"];
 
-    // Count all segment occurrences to know the total passes for centering the offset
-    let mut segment_total_passes = HashMap::<(NodeIndex, NodeIndex), u32>::new();
+    // Count all directed segment occurrences
+    let mut directed_counts = HashMap::<(NodeIndex, NodeIndex), u32>::new();
     for route in routes {
         for segment in route {
             let key = (segment.start_node, segment.end_node);
-            *segment_total_passes.entry(key).or_insert(0) += 1;
+            *directed_counts.entry(key).or_insert(0) += 1;
         }
     }
 
-    let mut segment_pass_num_tracker = HashMap::<(NodeIndex, NodeIndex), u32>::new();
+    let mut pass_num_tracker = HashMap::<(NodeIndex, NodeIndex), u32>::new();
     let mut layers_script_parts: Vec<String> = Vec::new();
 
     for (i, route) in routes.iter().enumerate() {
         let route_color = colors[i % colors.len()];
         for segment in route {
-            let key = (segment.start_node, segment.end_node);
-            let total_passes = *segment_total_passes.get(&key).unwrap_or(&1);
-            let pass_num = *segment_pass_num_tracker.entry(key).or_insert(0);
-            segment_pass_num_tracker.insert(key, pass_num + 1);
+            let u = segment.start_node;
+            let v = segment.end_node;
+
+            // Get counts for both directions to determine total passes on the physical road
+            let forward_count = *directed_counts.get(&(u, v)).unwrap_or(&0);
+            let reverse_count = *directed_counts.get(&(v, u)).unwrap_or(&0);
+            let total_passes = forward_count + reverse_count;
+
+            // Determine the pass number for this specific drawing instance
+            let current_pass_instance = *pass_num_tracker.entry((u, v)).or_insert(0);
+            pass_num_tracker.insert((u, v), current_pass_instance + 1);
+
+            // Determine the canonical "slot" for this line to ensure consistent ordering
+            let pass_num = if u.index() < v.index() {
+                // u->v is the "canonical" forward direction, its passes come first
+                current_pass_instance
+            } else {
+                // v->u is the "canonical" forward direction, so u->v traversals are drawn after
+                reverse_count + current_pass_instance
+            };
 
             let offset_path_points = offset_path(&segment.path, pass_num, total_passes, offset_scale);
 
