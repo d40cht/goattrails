@@ -437,29 +437,44 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
 
-            let distance_matrix = {
-                println!("\nPre-computing shortest paths between key nodes...");
+            let (actual_distance_matrix, cost_matrix) = {
                 let mut key_nodes: HashSet<NodeIndex> = top_candidates.iter().flat_map(|s| [s.start_node, s.end_node]).collect();
                 key_nodes.insert(start_node);
                 let key_nodes_vec: Vec<NodeIndex> = key_nodes.into_iter().collect();
-
-                let mut distance_matrix = HashMap::new();
-                let bar = ProgressBar::new(key_nodes_vec.len() as u64);
-                bar.set_style(ProgressStyle::default_bar().template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})").unwrap().progress_chars("#>-"));
-
                 let immutable_graph: &RouteGraph = &graph;
+
+                // 1. Calculate actual_distance_matrix (no penalties)
+                println!("\nPre-computing actual shortest paths between key nodes...");
+                let mut actual_distance_matrix = HashMap::new();
+                let bar1 = ProgressBar::new(key_nodes_vec.len() as u64);
+                bar1.set_style(ProgressStyle::default_bar().template("{spinner:.green} [1/2] [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})").unwrap().progress_chars("#>-"));
                 for &from_node in &key_nodes_vec {
-                    bar.inc(1);
-                    let shortest_paths = dijkstra(immutable_graph, from_node, None, |e| e.weight().weighted_distance);
+                    bar1.inc(1);
+                    let shortest_paths = dijkstra(immutable_graph, from_node, None, |e| e.weight().distance);
                     for &to_node in &key_nodes_vec {
                         if let Some(distance) = shortest_paths.get(&to_node) {
-                            distance_matrix.insert((from_node, to_node), *distance);
+                            actual_distance_matrix.insert((from_node, to_node), *distance);
                         }
                     }
                 }
-                bar.finish_with_message("APSP calculation complete.");
-                println!("Distance matrix has {} entries.", distance_matrix.len());
-                distance_matrix
+                bar1.finish_with_message("Actual distance matrix complete.");
+
+                // 2. Calculate cost_matrix (with penalties)
+                println!("\nPre-computing cost-based shortest paths between key nodes...");
+                let mut cost_matrix = HashMap::new();
+                let bar2 = ProgressBar::new(key_nodes_vec.len() as u64);
+                bar2.set_style(ProgressStyle::default_bar().template("{spinner:.green} [2/2] [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})").unwrap().progress_chars("#>-"));
+                for &from_node in &key_nodes_vec {
+                    bar2.inc(1);
+                    let shortest_paths = dijkstra(immutable_graph, from_node, None, |e| e.weight().weighted_distance);
+                    for &to_node in &key_nodes_vec {
+                        if let Some(distance) = shortest_paths.get(&to_node) {
+                            cost_matrix.insert((from_node, to_node), *distance);
+                        }
+                    }
+                }
+                bar2.finish_with_message("Cost matrix complete.");
+                (actual_distance_matrix, cost_matrix)
             };
 
             for candidate in &top_candidates {
@@ -481,7 +496,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     start_node,
                     route_config.target_distance_km * 1000.0,
                     &top_candidates,
-                    &distance_matrix,
+                    &actual_distance_matrix,
+                    &cost_matrix,
                     &config.algorithm,
                 ) {
                     generated_routes.push(route);
