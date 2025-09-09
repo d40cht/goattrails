@@ -18,6 +18,7 @@ use serde::Deserialize;
 
 pub mod map_exporter;
 pub mod route_generator;
+pub mod grasp_route_generator;
 
 /// Hilly route finder
 #[derive(Parser, Debug)]
@@ -485,7 +486,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut generated_routes = Vec::new();
             for i in 0..route_config.num_candidate_routes {
                 println!("\n--- Generating Route Candidate {}/{} for {} ---", i + 1, route_config.num_candidate_routes, route_name);
-                if let Some(route) = route_generator::generate_route(
+                if let Some(route) = grasp_route_generator::generate_route_grasp(
                     &graph,
                     start_node,
                     route_config.target_distance_km * 1000.0,
