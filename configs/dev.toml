@@ -21,4 +21,9 @@ north_leigh_roman_villa = { lat = 51.832490, lon = -1.427606, target_distance_km
 charlbury = { lat = 50.874039, lon = -1.481603, target_distance_km = 20.0, num_candidate_routes = 8 }
 chadlington = { lat = 51.895559, lon = -1.525357, target_distance_km = 20.0, num_candidate_routes = 8 }
 
-
+[highway_multipliers]
+trail = 1.0
+quiet_road = 1.5
+paved_road = 2.0
+major_road = 5.0
+motorway = 10.0

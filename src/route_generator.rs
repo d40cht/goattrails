@@ -116,11 +116,11 @@ pub fn generate_route(
                 current_node,
                 |n| n == segment.start_node,
                 |e| {
+                    let mut cost = e.weight().weighted_distance;
                     if discouraged_edges.contains(&(e.source(), e.target())) {
-                        e.weight().distance * config.penalty_factor
-                    } else {
-                        e.weight().distance
+                        cost *= config.penalty_factor;
                     }
+                    cost
                 },
                 |_| 0.0,
             ) {
@@ -139,11 +139,11 @@ pub fn generate_route(
             current_node,
             |n| n == start_node,
             |e| {
+                let mut cost = e.weight().weighted_distance;
                 if discouraged_edges.contains(&(e.source(), e.target())) {
-                    e.weight().distance * config.penalty_factor
-                } else {
-                    e.weight().distance
+                    cost *= config.penalty_factor;
                 }
+                cost
             },
             |_| 0.0,
         ) {
@@ -196,7 +196,7 @@ fn build_edge_data_path(graph: &RouteGraph, nodes: &[NodeIndex]) -> Vec<EdgeData
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Point, EdgeData, RouteGraph, AlgorithmConfig, CandidateSegment};
+    use crate::{Point, EdgeData, RouteGraph, AlgorithmConfig, CandidateSegment, HighwayType};
     use petgraph::graph::NodeIndex;
     use petgraph::algo::dijkstra;
     use std::collections::{HashMap, HashSet};
@@ -208,16 +208,16 @@ mod tests {
         let n3 = graph.add_node(Point { lat: 0.01, lon: 0.01 });
         let n4 = graph.add_node(Point { lat: 0.01, lon: 0.0 });
 
-        graph.add_edge(n1, n2, EdgeData { segment_id: 1, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 10.0, descent: 5.0, start_node: n1, end_node: n2 });
-        graph.add_edge(n2, n1, EdgeData { segment_id: 1, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 5.0, descent: 10.0, start_node: n2, end_node: n1 });
-        graph.add_edge(n2, n3, EdgeData { segment_id: 2, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 20.0, descent: 0.0, start_node: n2, end_node: n3 });
-        graph.add_edge(n3, n2, EdgeData { segment_id: 2, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 0.0, descent: 20.0, start_node: n3, end_node: n2 });
-        graph.add_edge(n3, n4, EdgeData { segment_id: 3, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 30.0, descent: 10.0, start_node: n3, end_node: n4 });
-        graph.add_edge(n4, n3, EdgeData { segment_id: 3, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 10.0, descent: 30.0, start_node: n4, end_node: n3 });
-        graph.add_edge(n4, n1, EdgeData { segment_id: 4, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 40.0, descent: 0.0, start_node: n4, end_node: n1 });
-        graph.add_edge(n1, n4, EdgeData { segment_id: 4, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 0.0, descent: 40.0, start_node: n1, end_node: n4 });
-        graph.add_edge(n1, n3, EdgeData { segment_id: 5, path: vec![], distance: 1414.0, weighted_distance: 1414.0, ascent: 5.0, descent: 5.0, start_node: n1, end_node: n3 });
-        graph.add_edge(n3, n1, EdgeData { segment_id: 5, path: vec![], distance: 1414.0, weighted_distance: 1414.0, ascent: 5.0, descent: 5.0, start_node: n3, end_node: n1 });
+        graph.add_edge(n1, n2, EdgeData { segment_id: 1, highway_type: HighwayType::Trail, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 10.0, descent: 5.0, start_node: n1, end_node: n2 });
+        graph.add_edge(n2, n1, EdgeData { segment_id: 1, highway_type: HighwayType::Trail, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 5.0, descent: 10.0, start_node: n2, end_node: n1 });
+        graph.add_edge(n2, n3, EdgeData { segment_id: 2, highway_type: HighwayType::Trail, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 20.0, descent: 0.0, start_node: n2, end_node: n3 });
+        graph.add_edge(n3, n2, EdgeData { segment_id: 2, highway_type: HighwayType::Trail, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 0.0, descent: 20.0, start_node: n3, end_node: n2 });
+        graph.add_edge(n3, n4, EdgeData { segment_id: 3, highway_type: HighwayType::Trail, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 30.0, descent: 10.0, start_node: n3, end_node: n4 });
+        graph.add_edge(n4, n3, EdgeData { segment_id: 3, highway_type: HighwayType::Trail, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 10.0, descent: 30.0, start_node: n4, end_node: n3 });
+        graph.add_edge(n4, n1, EdgeData { segment_id: 4, highway_type: HighwayType::Trail, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 40.0, descent: 0.0, start_node: n4, end_node: n1 });
+        graph.add_edge(n1, n4, EdgeData { segment_id: 4, highway_type: HighwayType::Trail, path: vec![], distance: 1000.0, weighted_distance: 1000.0, ascent: 0.0, descent: 40.0, start_node: n1, end_node: n4 });
+        graph.add_edge(n1, n3, EdgeData { segment_id: 5, highway_type: HighwayType::Trail, path: vec![], distance: 1414.0, weighted_distance: 1414.0, ascent: 5.0, descent: 5.0, start_node: n1, end_node: n3 });
+        graph.add_edge(n3, n1, EdgeData { segment_id: 5, highway_type: HighwayType::Trail, path: vec![], distance: 1414.0, weighted_distance: 1414.0, ascent: 5.0, descent: 5.0, start_node: n3, end_node: n1 });
         (graph, n1)
     }
 
@@ -263,6 +263,69 @@ mod tests {
         assert!(!route_path.is_empty());
         let total_dist: f64 = route_path.iter().map(|e| e.distance).sum();
         assert!(total_dist > 0.0);
+    }
+
+    #[test]
+    fn test_highway_weighting_prefers_lower_weight_paths() {
+        let mut graph = RouteGraph::new();
+        let n1 = graph.add_node(Point { lat: 0.0, lon: 0.0 });
+        let n2 = graph.add_node(Point { lat: 0.0, lon: 0.01 });
+        let n3 = graph.add_node(Point { lat: 0.0, lon: 0.02 });
+        let n4 = graph.add_node(Point { lat: 0.0, lon: 0.03 });
+
+        // Path A (good): n1 -> n2. Trail.
+        graph.add_edge(n1, n2, EdgeData { segment_id: 10, highway_type: HighwayType::Trail, path: vec![], distance: 100.0, weighted_distance: 100.0, ascent: 10.0, descent: 0.0, start_node: n1, end_node: n2 });
+        // Path B (bad): n1 -> n3. PavedRoad.
+        graph.add_edge(n1, n3, EdgeData { segment_id: 11, highway_type: HighwayType::PavedRoad, path: vec![], distance: 100.0, weighted_distance: 200.0, ascent: 10.0, descent: 0.0, start_node: n1, end_node: n3 });
+
+        // Common path to end: n2 -> n4 and n3 -> n4
+        graph.add_edge(n2, n4, EdgeData { segment_id: 12, highway_type: HighwayType::Trail, path: vec![], distance: 50.0, weighted_distance: 50.0, ascent: 5.0, descent: 0.0, start_node: n2, end_node: n4 });
+        graph.add_edge(n3, n4, EdgeData { segment_id: 13, highway_type: HighwayType::Trail, path: vec![], distance: 50.0, weighted_distance: 50.0, ascent: 5.0, descent: 0.0, start_node: n3, end_node: n4 });
+
+        // Add reverse edges
+        graph.add_edge(n2, n1, EdgeData { segment_id: 10, highway_type: HighwayType::Trail, path: vec![], distance: 100.0, weighted_distance: 100.0, ascent: 0.0, descent: 10.0, start_node: n2, end_node: n1 });
+        graph.add_edge(n3, n1, EdgeData { segment_id: 11, highway_type: HighwayType::PavedRoad, path: vec![], distance: 100.0, weighted_distance: 200.0, ascent: 0.0, descent: 10.0, start_node: n3, end_node: n1 });
+        graph.add_edge(n4, n2, EdgeData { segment_id: 12, highway_type: HighwayType::Trail, path: vec![], distance: 50.0, weighted_distance: 50.0, ascent: 0.0, descent: 5.0, start_node: n4, end_node: n2 });
+        graph.add_edge(n4, n3, EdgeData { segment_id: 13, highway_type: HighwayType::Trail, path: vec![], distance: 50.0, weighted_distance: 50.0, ascent: 0.0, descent: 5.0, start_node: n4, end_node: n3 });
+
+        let start_node = n1;
+        let top_candidates = vec![
+             CandidateSegment { start_node: n2, end_node: n4, distance: 50.0, ascent: 5.0 },
+        ];
+
+        let mut key_nodes: HashSet<NodeIndex> = top_candidates.iter().flat_map(|s| [s.start_node, s.end_node]).collect();
+        key_nodes.insert(start_node);
+        let key_nodes_vec: Vec<NodeIndex> = key_nodes.into_iter().collect();
+
+        let mut actual_distance_matrix = HashMap::new();
+        let mut cost_matrix = HashMap::new();
+        for &from_node in &key_nodes_vec {
+            let shortest_paths_actual = dijkstra(&graph, from_node, None, |e| e.weight().distance);
+            let shortest_paths_cost = dijkstra(&graph, from_node, None, |e| e.weight().weighted_distance);
+            for &to_node in &key_nodes_vec {
+                if let Some(distance) = shortest_paths_actual.get(&to_node) {
+                    actual_distance_matrix.insert((from_node, to_node), *distance);
+                }
+                if let Some(distance) = shortest_paths_cost.get(&to_node) {
+                    cost_matrix.insert((from_node, to_node), *distance);
+                }
+            }
+        }
+
+        let config = AlgorithmConfig {
+            n_candidate_segments: 100,
+            search_radius_divisor: 4.0,
+            k_top_candidates_to_consider: 1,
+            m_candidates_to_evaluate: 1,
+            penalty_factor: 1.0,
+        };
+
+        let route = generate_route(&graph, start_node, 1000.0, &top_candidates, &actual_distance_matrix, &cost_matrix, &config).unwrap();
+
+        // The tour should be n1 -> n2 -> n4 -> n1.
+        // We check that the good path (segment 10) is in the route, and the bad one (11) is not.
+        assert!(route.iter().any(|seg| seg.segment_id == 10));
+        assert!(!route.iter().any(|seg| seg.segment_id == 11));
     }
 
     #[test]
