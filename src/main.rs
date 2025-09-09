@@ -77,21 +77,25 @@ fn get_way_penalty<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, penalties
     }
 
     if let Some(highway) = highway_val {
-        // Check for an exact match in the specific penalties map
+        // Check for a specific penalty first.
         if let Some(penalty) = penalties.specific.get(highway) {
             return *penalty;
         }
-        // Fallback for highway tags not in the map - we consider them un-runnable
-        // unless they are in the allowed list from the original logic.
+
+        // These were the original "good" types. If not specifically penalized, they get the default.
         match highway {
-            "path" | "footway" | "track" | "bridleway" | "cycleway" => return penalties.default,
-            _ => () // If not in the original "good" list, check specific penalties or use default.
+            "path" | "footway" | "track" | "bridleway" | "cycleway" | "residential" | "unclassified" | "tertiary" => {
+                return penalties.default;
+            }
+            _ => {
+                // Any other highway type not in the penalties list is considered unusable.
+                return f64::INFINITY;
+            }
         }
     }
 
-    // For ways that are not explicitly penalized but were not in the original hardcoded list,
-    // we can assume a default penalty. This is safer than excluding them.
-    penalties.default
+    // No highway tag, so this way is not traversable.
+    f64::INFINITY
 }
 
 fn centroid(points: &[Point]) -> Option<Point> {
