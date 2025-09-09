@@ -201,6 +201,11 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
 
     for (i, route) in routes.iter().enumerate() {
         let route_color = colors[i % colors.len()];
+
+        // Pre-calculate total stats for the route
+        let total_route_dist_km: f64 = route.iter().map(|e| e.distance).sum::<f64>() / 1000.0;
+        let total_route_ascent_m: f64 = route.iter().map(|e| e.ascent).sum();
+
         for segment in route {
             let u = segment.start_node;
             let v = segment.end_node;
@@ -233,11 +238,11 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
             let js_coordinates = format!("[{}]", js_points.join(", "));
 
             let popup_content = format!(
-                "<b>Route #{} / Seg #{}</b><br>Pass {}/{}<br>Dist: {:.2}m<br>Ascent: {:.2}m",
+                "<b>Route #{}</b><br>Total Dist: {:.2}km<br>Total Ascent: {:.1}m<hr><b>Segment #{}</b><br>Dist: {:.1}m<br>Ascent: {:.1}m",
                 i + 1,
+                total_route_dist_km,
+                total_route_ascent_m,
                 segment.segment_id,
-                pass_num + 1,
-                total_passes,
                 segment.distance,
                 segment.ascent
             ).replace("'", "\\'");
