@@ -126,24 +126,6 @@ pub fn generate_route(
         let mut best_new_props = (0.0, 0.0);
 
         for i in 0..=tour.len() {
-            // Prevent inserting a segment that is the reverse of the previous or next segment in the tour
-            if i > 0 {
-                let prev_segment = &tour[i - 1];
-                if candidate.start_node == prev_segment.end_node
-                    && candidate.end_node == prev_segment.start_node
-                {
-                    continue;
-                }
-            }
-            if i < tour.len() {
-                let next_segment = &tour[i];
-                if candidate.start_node == next_segment.end_node
-                    && candidate.end_node == next_segment.start_node
-                {
-                    continue;
-                }
-            }
-
             let mut temp_tour = tour.clone();
             temp_tour.insert(i, candidate.clone());
             if let Some((new_dist, new_ascent)) =
@@ -177,6 +159,13 @@ pub fn generate_route(
 
     // Step 4: Reconstruct final path
     println!("\nReconstructing final route path...");
+
+    // Create a set of discouraged reverse edges
+    let discouraged_edges: HashSet<(NodeIndex, NodeIndex)> = tour
+        .iter()
+        .map(|segment| (segment.end_node, segment.start_node))
+        .collect();
+
     let mut final_path_nodes = vec![start_node];
     let mut current_node = start_node;
     let path_bar = ProgressBar::new(tour.len() as u64 + 1);
@@ -184,7 +173,19 @@ pub fn generate_route(
 
     for segment in &tour {
         path_bar.inc(1);
-        if let Some((_, path)) = astar(graph, current_node, |n| n == segment.start_node, |e| e.weight().distance, |_| 0.0) {
+        if let Some((_, path)) = astar(
+            graph,
+            current_node,
+            |n| n == segment.start_node,
+            |e| {
+                if discouraged_edges.contains(&(e.source(), e.target())) {
+                    e.weight().distance * 4.0
+                } else {
+                    e.weight().distance
+                }
+            },
+            |_| 0.0,
+        ) {
             final_path_nodes.extend(&path[1..]);
         } else {
             eprintln!("Could not find path between {:?} and {:?}", current_node, segment.start_node);
@@ -195,7 +196,19 @@ pub fn generate_route(
     }
 
     path_bar.inc(1);
-    if let Some((_, path)) = astar(graph, current_node, |n| n == start_node, |e| e.weight().distance, |_| 0.0) {
+    if let Some((_, path)) = astar(
+        graph,
+        current_node,
+        |n| n == start_node,
+        |e| {
+            if discouraged_edges.contains(&(e.source(), e.target())) {
+                e.weight().distance * 4.0
+            } else {
+                e.weight().distance
+            }
+        },
+        |_| 0.0,
+    ) {
         final_path_nodes.extend(&path[1..]);
     } else {
         eprintln!("Could not find path back to start node from {:?}", current_node);
