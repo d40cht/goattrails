@@ -5,6 +5,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use petgraph::algo::{astar, dijkstra};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
+use rand::Rng;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
@@ -95,11 +96,21 @@ pub fn generate_route(
     let mut tour: Vec<CandidateSegment> = Vec::new();
     let mut current_properties = (0.0, 0.0);
 
-    let bar = ProgressBar::new(top_candidates.len() as u64);
+    let mut remaining_candidates = top_candidates;
+    let mut rng = rand::thread_rng();
+
+    let bar = ProgressBar::new(remaining_candidates.len() as u64);
     bar.set_style(ProgressStyle::default_bar().template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}").unwrap().progress_chars("#>-"));
 
-    for candidate in top_candidates {
+    while !remaining_candidates.is_empty() {
         bar.inc(1);
+
+        const K_TOP_CANDIDATES_TO_CONSIDER: usize = 5;
+        let pool_size = std::cmp::min(K_TOP_CANDIDATES_TO_CONSIDER, remaining_candidates.len());
+
+        let random_candidate_pool_idx = rng.gen_range(0..pool_size);
+        let candidate = remaining_candidates.remove(random_candidate_pool_idx);
+
         if tour.is_empty() {
             if let Some((dist, ascent)) = calculate_tour_properties_from_segments(start_node, &[candidate.clone()], &distance_matrix) {
                 if dist <= target_distance {
@@ -115,9 +126,29 @@ pub fn generate_route(
         let mut best_new_props = (0.0, 0.0);
 
         for i in 0..=tour.len() {
+            // Prevent inserting a segment that is the reverse of the previous or next segment in the tour
+            if i > 0 {
+                let prev_segment = &tour[i - 1];
+                if candidate.start_node == prev_segment.end_node
+                    && candidate.end_node == prev_segment.start_node
+                {
+                    continue;
+                }
+            }
+            if i < tour.len() {
+                let next_segment = &tour[i];
+                if candidate.start_node == next_segment.end_node
+                    && candidate.end_node == next_segment.start_node
+                {
+                    continue;
+                }
+            }
+
             let mut temp_tour = tour.clone();
             temp_tour.insert(i, candidate.clone());
-            if let Some((new_dist, new_ascent)) = calculate_tour_properties_from_segments(start_node, &temp_tour, &distance_matrix) {
+            if let Some((new_dist, new_ascent)) =
+                calculate_tour_properties_from_segments(start_node, &temp_tour, &distance_matrix)
+            {
                 if new_dist <= target_distance {
                     let cost = new_dist - current_properties.0;
                     if cost < min_cost {
