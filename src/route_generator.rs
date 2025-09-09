@@ -29,7 +29,7 @@ pub fn generate_route(
 
     let start_point_coords = graph.node_weight(start_node).unwrap();
     let start_point_geo = GeoPoint::new(start_point_coords.lon, start_point_coords.lat);
-    let search_radius = target_distance / 3.0;
+    let search_radius = target_distance / 4.0;
 
     // Step 1: Candidate Segment Identification
     let mut candidate_segments: Vec<_> = graph
