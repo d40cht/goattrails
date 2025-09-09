@@ -8,5 +8,6 @@ map_offset_scale = 0.000060
 # Defines one or more route-finding tasks to run.
 # Each task has a unique name (e.g., "wytham", "shotover") which will be used in the output filename.
 [routes]
+stanton_harcourt = { lat = 51.749232, lon = -1.401938, target_distance_km = 20.0, num_candidate_routes = 1 }
 wytham = { lat = 51.774716, lon = -1.311914, target_distance_km = 12.0, num_candidate_routes = 1 }
 millwood_end = { lat = 51.828041, lon = -1.405427, target_distance_km = 30.0, num_candidate_routes = 1 }
