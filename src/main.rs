@@ -30,6 +30,7 @@ struct Config {
     route_candidates_to_generate: usize,
     top_routes_to_display: usize,
     start_point: Option<PointConfig>,
+    map_offset_scale: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -45,6 +46,8 @@ pub struct EdgeData {
     pub distance: f64,
     pub ascent: f64,
     pub descent: f64,
+    pub start_node: NodeIndex,
+    pub end_node: NodeIndex,
 }
 
 type RouteGraph = Graph<Point, EdgeData, petgraph::Directed>;
@@ -212,11 +215,27 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
                             let start_idx = *osm_id_to_node_index.get(&last_id).unwrap();
                             let end_idx = *osm_id_to_node_index.get(&node_id).unwrap();
 
-                            let forward_edge = EdgeData { segment_id: segment_id_counter, path: current_path_segment.clone(), distance: 0.0, ascent: 0.0, descent: 0.0 };
+                            let forward_edge = EdgeData {
+                                segment_id: segment_id_counter,
+                                path: current_path_segment.clone(),
+                                distance: 0.0,
+                                ascent: 0.0,
+                                descent: 0.0,
+                                start_node: start_idx,
+                                end_node: end_idx,
+                            };
 
                             let mut reversed_path = current_path_segment.clone();
                             reversed_path.reverse();
-                            let reverse_edge = EdgeData { segment_id: segment_id_counter, path: reversed_path, distance: 0.0, ascent: 0.0, descent: 0.0 };
+                            let reverse_edge = EdgeData {
+                                segment_id: segment_id_counter,
+                                path: reversed_path,
+                                distance: 0.0,
+                                ascent: 0.0,
+                                descent: 0.0,
+                                start_node: end_idx,
+                                end_node: start_idx,
+                            };
 
                             graph.add_edge(start_idx, end_idx, forward_edge);
                             graph.add_edge(end_idx, start_idx, reverse_edge);
@@ -380,7 +399,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         fs::create_dir_all("vis")?;
         let map_title = "Top Generated Routes";
-        let html_content = map_exporter::export_route_map(&top_routes, map_title);
+        let offset_scale = config.map_offset_scale.unwrap_or(0.000060);
+        let html_content = map_exporter::export_route_map(&top_routes, map_title, offset_scale);
         let filename = "vis/final_route.html";
         fs::write(filename, html_content)?;
         println!("-> Saved top {} routes to {}", top_routes.len(), filename);
