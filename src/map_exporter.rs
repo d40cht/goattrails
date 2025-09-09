@@ -148,34 +148,37 @@ fn offset_path(path: &[Point], pass_num: u32, total_passes: u32, offset_scale: f
     if total_passes <= 1 {
         return path.to_vec();
     }
-    // This calculation centers the lines around the original path
     let shift = (pass_num as f64 - (total_passes as f64 - 1.0) / 2.0) * offset_scale;
 
     if path.len() < 2 {
         return path.to_vec();
     }
 
-    // Create a new path with each point offset perpendicularly
     path.windows(2).enumerate().flat_map(|(i, p_window)| {
         let p1 = p_window[0];
         let p2 = p_window[1];
 
-        let dx = p2.lon - p1.lon;
-        let dy = p2.lat - p1.lat;
+        // Create a canonical representation of the segment to get a consistent perpendicular vector.
+        // We can order by longitude, then latitude.
+        let (u, v) = if (p1.lon, p1.lat) < (p2.lon, p2.lat) { (p1, p2) } else { (p2, p1) };
+        let dx = v.lon - u.lon;
+        let dy = v.lat - u.lat;
 
         let magnitude = (dx.powi(2) + dy.powi(2)).sqrt();
         let (offset_dx, offset_dy) = if magnitude > 0.0 {
-            (-dy / magnitude * shift, dx / magnitude * shift)
+            let perp_dx = -dy / magnitude;
+            let perp_dy = dx / magnitude;
+            (perp_dx * shift, perp_dy * shift)
         } else {
             (0.0, 0.0)
         };
 
-        if i == 0 { // For the first segment, offset both points
+        if i == 0 {
             vec![
                 Point { lon: p1.lon + offset_dx, lat: p1.lat + offset_dy },
                 Point { lon: p2.lon + offset_dx, lat: p2.lat + offset_dy },
             ]
-        } else { // For subsequent segments, only offset the end point
+        } else {
             vec![Point { lon: p2.lon + offset_dx, lat: p2.lat + offset_dy }]
         }
     }).collect()
