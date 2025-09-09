@@ -34,7 +34,7 @@ pub fn generate_route(
     start_node: NodeIndex,
     target_distance: f64,
     iteration_limit: usize,
-) -> Option<Vec<EdgeData>> {
+) -> Option<(Vec<NodeIndex>, Vec<EdgeData>)> {
     let mut rng = rand::thread_rng();
     const N_CANDIDATES: usize = 10;
     const M_TOP_CANDIDATES: usize = 3;
@@ -51,6 +51,11 @@ pub fn generate_route(
         distance: initial_dist,
         ascent: initial_ascent,
     };
+
+    let mut used_edges = HashSet::new();
+    for window in current_route.nodes.windows(2) {
+        used_edges.insert((window[0], window[1]));
+    }
 
     let bar = ProgressBar::new(iteration_limit as u64);
     bar.set_style(ProgressStyle::default_bar()
@@ -83,9 +88,7 @@ pub fn generate_route(
 
             let original_segment_dist = calculate_route_properties(graph, &current_route.nodes[segment_start_idx..=segment_end_idx]).0;
 
-            let forbidden_nodes: HashSet<NodeIndex> = current_route.nodes.iter().cloned().collect();
-
-            if let Some((new_path_nodes, (_new_dist, _new_ascent))) = find_alternative_path(graph, u, v, original_segment_dist, &forbidden_nodes) {
+            if let Some((new_path_nodes, (_new_dist, _new_ascent))) = find_alternative_path(graph, u, v, original_segment_dist, &used_edges) {
 
                 let mut potential_new_route_nodes = current_route.nodes.clone();
                 potential_new_route_nodes.splice(segment_start_idx..=segment_end_idx, new_path_nodes);
@@ -114,12 +117,18 @@ pub fn generate_route(
             current_route.nodes = chosen_candidate.nodes.clone();
             current_route.distance = chosen_candidate.distance;
             current_route.ascent = chosen_candidate.ascent;
+
+            used_edges.clear();
+            for window in current_route.nodes.windows(2) {
+                used_edges.insert((window[0], window[1]));
+            }
         }
     }
     bar.finish();
     println!("Route generation finished. Final distance: {:.2}km, Ascent: {:.2}m", current_route.distance / 1000.0, current_route.ascent);
 
-    Some(build_edge_data_path(graph, &current_route.nodes))
+    let edge_path = build_edge_data_path(graph, &current_route.nodes);
+    Some((current_route.nodes, edge_path))
 }
 
 fn find_alternative_path(
@@ -127,7 +136,7 @@ fn find_alternative_path(
     start: NodeIndex,
     end: NodeIndex,
     original_distance: f64,
-    forbidden_nodes: &HashSet<NodeIndex>,
+    used_edges: &HashSet<(NodeIndex, NodeIndex)>,
 ) -> Option<(Vec<NodeIndex>, (f64, f64))> {
     let max_distance = original_distance * 4.0 + 1000.0;
     let end_point = graph[end];
@@ -142,8 +151,7 @@ fn find_alternative_path(
                 return f64::INFINITY;
             }
 
-            let target_node = e.target();
-            if forbidden_nodes.contains(&target_node) && target_node != end {
+            if used_edges.contains(&(e.source(), e.target())) {
                 return f64::INFINITY;
             }
 
@@ -234,16 +242,17 @@ mod tests {
         let (graph, start_node) = create_test_graph();
         let route = generate_route(&graph, start_node, 5000.0, 100);
         assert!(route.is_some());
-        let route_path = route.unwrap();
-        assert!(!route_path.is_empty());
+        let (route_nodes, route_edges) = route.unwrap();
+        assert!(!route_nodes.is_empty());
+        assert!(!route_edges.is_empty());
     }
 
     #[test]
     fn test_find_alternative_path() {
         let (graph, n1) = create_test_graph();
         let n2 = NodeIndex::new(1);
-        let forbidden_nodes = HashSet::new();
-        let result = find_alternative_path(&graph, n1, n2, 1000.0, &forbidden_nodes);
+        let used_edges = HashSet::new();
+        let result = find_alternative_path(&graph, n1, n2, 1000.0, &used_edges);
         assert!(result.is_some());
         let (path, (dist, ascent)) = result.unwrap();
         assert_eq!(path, vec![NodeIndex::new(0), NodeIndex::new(2), NodeIndex::new(1)]);
