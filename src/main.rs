@@ -63,12 +63,23 @@ struct Config {
     global: GlobalConfig,
     algorithm: AlgorithmConfig,
     routes: HashMap<String, RouteConfig>,
+    highway_multipliers: HashMap<String, f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Point {
     pub lat: f64,
     pub lon: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HighwayType {
+    Trail,
+    Pedestrian,
+    QuietRoad,
+    PavedRoad,
+    MajorRoad,
+    Motorway,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +92,7 @@ pub struct EdgeData {
     pub descent: f64,
     pub start_node: NodeIndex,
     pub end_node: NodeIndex,
+    pub highway_type: HighwayType,
 }
 
 type RouteGraph = Graph<Point, EdgeData, petgraph::Directed>;
@@ -93,7 +105,7 @@ pub struct CandidateSegment {
     pub ascent: f64,
 }
 
-fn is_valid_way<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> bool {
+fn get_highway_type<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<HighwayType> {
     let mut highway_val: Option<&str> = None;
     let mut access_val: Option<&str> = None;
 
@@ -107,20 +119,23 @@ fn is_valid_way<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> bool {
 
     if let Some(access) = access_val {
         if matches!(access, "private" | "no") {
-            return false;
+            return None;
         }
     }
 
     if let Some(highway) = highway_val {
         return match highway {
-            "path" | "footway" | "track" | "bridleway" | "cycleway" | "residential"
-            | "unclassified" | "tertiary" => true,
-            "motorway" | "primary" | "trunk" => false,
-            _ => false,
+            "path" | "bridleway" | "track"  => Some(HighwayType::Trail),
+            "footway" | "cycleway" => Some(HighwayType::Pedestrian),
+            "residential" | "unclassified" => Some(HighwayType::QuietRoad),
+            "tertiary" => Some(HighwayType::PavedRoad),
+            "primary" | "trunk" => Some(HighwayType::MajorRoad),
+            "motorway" => Some(HighwayType::Motorway),
+            _ => None,
         };
     }
 
-    false
+    None
 }
 
 fn centroid(points: &[Point]) -> Option<Point> {
@@ -181,7 +196,7 @@ fn get_interpolated_elevation(point: &Point, elevation_data: &Array2<i16>, geo_t
     Some(r1 * (1.0 - y_frac) + r2 * y_frac)
 }
 
-fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point>), Box<dyn Error>> {
+fn build_graph(osm_path: &str, srtm_path: &str, highway_multipliers: &HashMap<String, f64>) -> Result<(RouteGraph, Vec<Point>), Box<dyn Error>> {
     const INTERPOLATION_DISTANCE_M: f64 = 10.0;
     println!("Building graph...");
 
@@ -222,7 +237,7 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
     let reader3 = ElementReader::from_path(osm_path)?;
     reader3.for_each(|element| {
         if let Element::Way(way) = element {
-            if is_valid_way(way.tags()) {
+            if get_highway_type(way.tags()).is_some() {
                 for node_id in way.refs() {
                     *node_ref_counts.entry(node_id).or_insert(0) += 1;
                 }
@@ -245,7 +260,7 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
     let reader4 = ElementReader::from_path(osm_path)?;
     reader4.for_each(|element| {
         if let Element::Way(way) = element {
-            if is_valid_way(way.tags()) {
+            if let Some(highway_type) = get_highway_type(way.tags()) {
                 let mut last_intersection_node_id: Option<i64> = None;
                 let mut current_path_segment = Vec::new();
                 for node_id in way.refs() {
@@ -265,6 +280,7 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
                                 descent: 0.0,
                                 start_node: start_idx,
                                 end_node: end_idx,
+                                highway_type,
                             };
 
                             let mut reversed_path = current_path_segment.clone();
@@ -278,6 +294,7 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
                                 descent: 0.0,
                                 start_node: end_idx,
                                 end_node: start_idx,
+                                highway_type,
                             };
 
                             graph.add_edge(start_idx, end_idx, forward_edge);
@@ -338,12 +355,11 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
             }
         }
         edge.distance = distance;
-        edge.weighted_distance = distance;
         edge.ascent = ascent;
         edge.descent = descent;
     }
 
-    // The reverse edges were created with ascent/descent as 0.0, now we need to fix them.
+    // Pass 6: The reverse edges were created with ascent/descent as 0.0, now we need to fix them.
     let mut edges_to_update = Vec::new();
     for edge_ref in graph.edge_references() {
         if let Some(reverse_edge_index) = graph.find_edge(edge_ref.target(), edge_ref.source()) {
@@ -358,6 +374,20 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
             edge_weight.ascent = ascent;
             edge_weight.descent = descent;
         }
+    }
+
+    // Pass 7: Apply highway multipliers to calculate weighted distance
+    for edge in graph.edge_weights_mut() {
+        let multiplier_key = match edge.highway_type {
+            HighwayType::Trail => "trail",
+            HighwayType::Pedestrian => "pedestrian",
+            HighwayType::QuietRoad => "quiet_road",
+            HighwayType::PavedRoad => "paved_road",
+            HighwayType::MajorRoad => "major_road",
+            HighwayType::Motorway => "motorway",
+        };
+        let multiplier = highway_multipliers.get(multiplier_key).unwrap_or(&1.0);
+        edge.weighted_distance = edge.distance * multiplier;
     }
 
     println!("Graph build complete. Final graph has {} nodes and {} edges.", graph.node_count(), graph.edge_count());
@@ -381,7 +411,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let config_str = fs::read_to_string(args.config)?;
     let config: Config = toml::from_str(&config_str)?;
 
-    let (mut graph, _parking_locations) = build_graph(&config.global.osm_path, &config.global.srtm_path)?;
+    let (mut graph, _parking_locations) = build_graph(&config.global.osm_path, &config.global.srtm_path, &config.highway_multipliers)?;
 
     for (route_name, route_config) in config.routes {
         println!("\n--- Processing route: {} ---", route_name);
