@@ -3,6 +3,7 @@ use geo::{Distance, Haversine, InterpolatePoint, Point as GeoPoint};
 use petgraph::graph::NodeIndex;
 use std::collections::HashMap;
 
+// This function is not used by the main route exporter, but might be useful for debugging.
 pub fn export_combined_map(
     top_edges: &[EdgeData],
     parking_locations: &[Point],
@@ -80,13 +81,12 @@ pub fn export_combined_map(
         "OpenTopoMap": opentopo
     }};
 
-    L.control.layers(baseMaps).addTo(map);
-
     var layers = [
         {layers_script}
     ];
 
     var featureGroup = L.featureGroup(layers).addTo(map);
+    L.control.layers(baseMaps).addTo(map);
 
     if (layers.length > 0) {{
         map.fitBounds(featureGroup.getBounds().pad(0.1));
@@ -187,85 +187,103 @@ fn offset_path(path: &[Point], pass_num: u32, total_passes: u32, offset_scale: f
 pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64) -> String {
     let colors = ["blue", "red", "green", "purple", "orange", "darkred", "lightred", "darkblue", "cadetblue"];
 
-    // Count all directed segment occurrences
     let mut directed_counts = HashMap::<(NodeIndex, NodeIndex), u32>::new();
     for route in routes {
         for segment in route {
-            let key = (segment.start_node, segment.end_node);
-            *directed_counts.entry(key).or_insert(0) += 1;
+            *directed_counts.entry((segment.start_node, segment.end_node)).or_insert(0) += 1;
         }
     }
 
     let mut pass_num_tracker = HashMap::<(NodeIndex, NodeIndex), u32>::new();
-    let mut layers_script_parts: Vec<String> = Vec::new();
+    let mut layer_group_definitions = Vec::new();
+    let mut overlay_map_entries = Vec::new();
+    let mut all_route_groups = Vec::new();
 
     for (i, route) in routes.iter().enumerate() {
         let route_color = colors[i % colors.len()];
-
-        // Pre-calculate total stats for the route
         let total_route_dist_km: f64 = route.iter().map(|e| e.distance).sum::<f64>() / 1000.0;
         let total_route_ascent_m: f64 = route.iter().map(|e| e.ascent).sum();
+        let mut route_specific_layers = Vec::new();
 
         for segment in route {
             let u = segment.start_node;
             let v = segment.end_node;
 
-            // Get counts for both directions to determine total passes on the physical road
             let forward_count = *directed_counts.get(&(u, v)).unwrap_or(&0);
             let reverse_count = *directed_counts.get(&(v, u)).unwrap_or(&0);
             let total_passes = forward_count + reverse_count;
 
-            // Determine the pass number for this specific drawing instance
             let current_pass_instance = *pass_num_tracker.entry((u, v)).or_insert(0);
             pass_num_tracker.insert((u, v), current_pass_instance + 1);
 
-            // Determine the canonical "slot" for this line to ensure consistent ordering
-            let pass_num = if u.index() < v.index() {
-                // u->v is the "canonical" forward direction, its passes come first
-                current_pass_instance
-            } else {
-                // v->u is the "canonical" forward direction, so u->v traversals are drawn after
-                reverse_count + current_pass_instance
-            };
+            let pass_num = if u.index() < v.index() { current_pass_instance } else { reverse_count + current_pass_instance };
 
             let offset_path_points = offset_path(&segment.path, pass_num, total_passes, offset_scale);
-
-            let js_points: Vec<String> = offset_path_points
-                .iter()
-                .map(|p| format!("[{}, {}]", p.lat, p.lon))
-                .collect();
-
+            let js_points: Vec<String> = offset_path_points.iter().map(|p| format!("[{}, {}]", p.lat, p.lon)).collect();
             let js_coordinates = format!("[{}]", js_points.join(", "));
 
             let popup_content = format!(
                 "<b>Route #{}</b><br>Total Dist: {:.2}km<br>Total Ascent: {:.1}m<hr><b>Segment #{}</b><br>Dist: {:.1}m<br>Ascent: {:.1}m",
-                i + 1,
-                total_route_dist_km,
-                total_route_ascent_m,
-                segment.segment_id,
-                segment.distance,
-                segment.ascent
+                i + 1, total_route_dist_km, total_route_ascent_m, segment.segment_id, segment.distance, segment.ascent
             ).replace("'", "\\'");
 
-            let polyline_str = format!(
+            route_specific_layers.push(format!(
                 "L.polyline({js_coordinates}, {{ color: '{color}', weight: 3 }}).bindPopup('{popup_content}')",
-                js_coordinates = js_coordinates,
-                color = route_color,
-                popup_content = popup_content
-            );
-            layers_script_parts.push(polyline_str);
+                js_coordinates = js_coordinates, color = route_color, popup_content = popup_content
+            ));
 
             if let Some(marker_point) = get_point_at_ratio(&segment.path, 0.75) {
-                let marker_str = format!(
+                 route_specific_layers.push(format!(
                     "L.circleMarker([{}, {}], {{ radius: 2, color: '{color}', fillColor: '{color}', fillOpacity: 1.0 }})",
                     marker_point.lat, marker_point.lon, color = route_color
-                );
-                layers_script_parts.push(marker_str);
+                ));
             }
         }
+
+        let route_group_var = format!("route{}Group", i);
+        layer_group_definitions.push(format!("var {} = L.layerGroup([{}]);", route_group_var, route_specific_layers.join(", ")));
+        all_route_groups.push(route_group_var.clone());
+
+        let overlay_label = format!("Route #{} ({:.2} km, {:.0}m ascent)", i + 1, total_route_dist_km, total_route_ascent_m);
+        overlay_map_entries.push(format!("\"{}\": {}", overlay_label.replace("'", "\\'"), route_group_var));
     }
 
-    let layers_script = layers_script_parts.join(",\n");
+    let script_logic = format!(
+        r#"
+    var map = L.map('map');
+    var opentopo = L.tileLayer('https://{{s}}.tile.opentopomap.org/{{z}}/{{x}}/{{y}}.png', {{
+        attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, SRTM | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)'
+    }}).addTo(map);
+
+    var baseMaps = {{
+        "OpenTopoMap": opentopo
+    }};
+
+    {layer_group_definitions}
+
+    var overlayMaps = {{
+        {overlay_map_entries}
+    }};
+
+    L.control.layers(baseMaps, overlayMaps).addTo(map);
+
+    var allRouteLayers = [{all_route_groups}];
+    allRouteLayers.forEach(function(layer) {{
+        layer.addTo(map);
+    }});
+
+    var featureGroup = L.featureGroup(allRouteLayers);
+
+    if (featureGroup.getLayers().length > 0) {{
+        map.fitBounds(featureGroup.getBounds().pad(0.1));
+    }} else {{
+        map.setView([51.505, -0.09], 13);
+    }}
+"#,
+        layer_group_definitions = layer_group_definitions.join("\n    "),
+        overlay_map_entries = overlay_map_entries.join(",\n        "),
+        all_route_groups = all_route_groups.join(", ")
+    );
 
     format!(
         r#"
@@ -285,27 +303,12 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
 <body>
 <div id="map"></div>
 <script>
-    var map = L.map('map');
-    var opentopo = L.tileLayer('https://{{s}}.tile.opentopomap.org/{{z}}/{{x}}/{{y}}.png', {{
-        attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, SRTM | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)'
-    }}).addTo(map);
-
-    var layers = [
-        {layers_script}
-    ];
-
-    var featureGroup = L.featureGroup(layers).addTo(map);
-
-    if (layers.length > 0) {{
-        map.fitBounds(featureGroup.getBounds().pad(0.1));
-    }} else {{
-        map.setView([51.505, -0.09], 13);
-    }}
+{script_logic}
 </script>
 </body>
 </html>
 "#,
         title = title,
-        layers_script = layers_script
+        script_logic = script_logic
     )
 }
