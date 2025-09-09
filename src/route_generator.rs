@@ -22,14 +22,14 @@ pub fn generate_route(
     target_distance: f64,
     _iteration_limit: usize, // iteration_limit is not used in the new algo
 ) -> Option<Vec<EdgeData>> {
-    const N_CANDIDATE_SEGMENTS: usize = 200;
+    const N_CANDIDATE_SEGMENTS: usize = 500;
     const MIN_ASCENT_METERS: f64 = 5.0;
 
     println!("Starting route generation with greedy insertion heuristic...");
 
     let start_point_coords = graph.node_weight(start_node).unwrap();
     let start_point_geo = GeoPoint::new(start_point_coords.lon, start_point_coords.lat);
-    let search_radius = target_distance / 2.0;
+    let search_radius = target_distance / 3.0;
 
     // Step 1: Candidate Segment Identification
     let mut candidate_segments: Vec<_> = graph
