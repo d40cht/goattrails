@@ -1,126 +1,27 @@
-use crate::{EdgeData, RouteGraph};
-use geo::prelude::*;
-use geo::{Haversine, Point as GeoPoint};
+use crate::{AlgorithmConfig, CandidateSegment, EdgeData, RouteGraph};
 use indicatif::{ProgressBar, ProgressStyle};
-use petgraph::algo::{astar, dijkstra};
+use petgraph::algo::astar;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
-use rand::Rng;
+use rand;
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone)]
-struct CandidateSegment {
-    start_node: NodeIndex,
-    end_node: NodeIndex,
-    distance: f64,
-    ascent: f64,
-}
-
 pub fn generate_route(
-    graph: &mut RouteGraph,
+    graph: &RouteGraph,
     start_node: NodeIndex,
     target_distance: f64,
-    _iteration_limit: usize, // iteration_limit is not used in the new algo
+    top_candidates: &[CandidateSegment],
+    distance_matrix: &HashMap<(NodeIndex, NodeIndex), f64>,
+    config: &AlgorithmConfig,
 ) -> Option<Vec<EdgeData>> {
-    const N_CANDIDATE_SEGMENTS: usize = 500;
-    const MIN_ASCENT_METERS: f64 = 5.0;
-
     println!("Starting route generation with greedy insertion heuristic...");
-
-    let start_point_coords = graph.node_weight(start_node).unwrap();
-    let start_point_geo = GeoPoint::new(start_point_coords.lon, start_point_coords.lat);
-    let search_radius = target_distance / 4.0;
-
-    // Step 1: Candidate Segment Identification
-    let mut candidate_segments: Vec<_> = graph
-        .edge_references()
-        .filter_map(|edge| {
-            let weight = edge.weight();
-            if weight.distance == 0.0 {
-                return None;
-            }
-            let source_node_coords = graph.node_weight(edge.source()).unwrap();
-            let distance_from_start =
-                Haversine.distance(start_point_geo, GeoPoint::new(source_node_coords.lon, source_node_coords.lat));
-
-            if distance_from_start > search_radius || weight.ascent < MIN_ASCENT_METERS {
-                return None;
-            }
-
-            Some((
-                CandidateSegment {
-                    start_node: edge.source(),
-                    end_node: edge.target(),
-                    distance: weight.distance,
-                    ascent: weight.ascent,
-                },
-                weight.ascent / weight.distance,
-            ))
-        })
-        .collect();
-
-    candidate_segments.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    let top_candidates: Vec<CandidateSegment> =
-        candidate_segments.into_iter().map(|(seg, _)| seg).take(N_CANDIDATE_SEGMENTS).collect();
-
-    if top_candidates.is_empty() {
-        eprintln!("No suitable candidate segments found within the search radius.");
-        return None;
-    }
-    println!("Identified {} candidate segments.", top_candidates.len());
-
-    // --- START: NEW SECTION TO PENALIZE CANDIDATE SEGMENTS ---
-    println!("\nApplying penalty to candidate segments for APSP calculation...");
-    const PENALTY_FACTOR: f64 = 4.0;
-    for candidate in &top_candidates {
-        let edge_index = graph.find_edge(candidate.start_node, candidate.end_node).unwrap();
-        if let Some(edge_weight) = graph.edge_weight_mut(edge_index) {
-            edge_weight.weighted_distance = edge_weight.distance * PENALTY_FACTOR;
-        }
-    }
-    // --- END: NEW SECTION ---
-
-    // Step 2: Pre-computation of Shortest Paths (APSP)
-    let distance_matrix = {
-        println!("\nPre-computing shortest paths between key nodes...");
-        let mut key_nodes: HashSet<NodeIndex> = top_candidates.iter().flat_map(|s| [s.start_node, s.end_node]).collect();
-        key_nodes.insert(start_node);
-        let key_nodes_vec: Vec<NodeIndex> = key_nodes.into_iter().collect();
-
-        let mut distance_matrix = HashMap::new();
-        let bar = ProgressBar::new(key_nodes_vec.len() as u64);
-        bar.set_style(ProgressStyle::default_bar().template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})").unwrap().progress_chars("#>-"));
-
-        let immutable_graph: &RouteGraph = graph;
-        for &from_node in &key_nodes_vec {
-            bar.inc(1);
-            let shortest_paths = dijkstra(immutable_graph, from_node, None, |e| e.weight().weighted_distance);
-            for &to_node in &key_nodes_vec {
-                if let Some(distance) = shortest_paths.get(&to_node) {
-                    distance_matrix.insert((from_node, to_node), *distance);
-                }
-            }
-        }
-        bar.finish_with_message("APSP calculation complete.");
-        println!("Distance matrix has {} entries.", distance_matrix.len());
-        distance_matrix
-    };
-
-    // --- START: NEW SECTION TO RESET WEIGHTS ---
-    for candidate in &top_candidates {
-        let edge_index = graph.find_edge(candidate.start_node, candidate.end_node).unwrap();
-        if let Some(edge_weight) = graph.edge_weight_mut(edge_index) {
-            edge_weight.weighted_distance = edge_weight.distance;
-        }
-    }
-    // --- END: NEW SECTION ---
 
     // Step 3: Route Calculation using Greedy Insertion
     println!("\nCalculating best route using greedy insertion...");
     let mut tour: Vec<CandidateSegment> = Vec::new();
     let mut current_properties = (0.0, 0.0);
 
-    let mut remaining_candidates = top_candidates;
+    let mut remaining_candidates = top_candidates.to_vec();
     let mut rng = rand::thread_rng();
 
     let bar = ProgressBar::new(remaining_candidates.len() as u64);
@@ -129,47 +30,58 @@ pub fn generate_route(
     while !remaining_candidates.is_empty() {
         bar.inc(1);
 
-        const K_TOP_CANDIDATES_TO_CONSIDER: usize = 5;
-        let pool_size = std::cmp::min(K_TOP_CANDIDATES_TO_CONSIDER, remaining_candidates.len());
+        let k_pool_size = std::cmp::min(config.k_top_candidates_to_consider, remaining_candidates.len());
+        if k_pool_size == 0 { break; }
+        let m_to_evaluate = std::cmp::min(config.m_candidates_to_evaluate, k_pool_size);
 
-        let random_candidate_pool_idx = rng.gen_range(0..pool_size);
-        let candidate = remaining_candidates.remove(random_candidate_pool_idx);
+        let candidate_indices_to_check = rand::seq::index::sample(&mut rng, k_pool_size, m_to_evaluate).into_vec();
 
-        if tour.is_empty() {
-            if let Some((dist, ascent)) = calculate_tour_properties_from_segments(start_node, &[candidate.clone()], &distance_matrix) {
-                if dist <= target_distance {
-                    tour.push(candidate);
-                    current_properties = (dist, ascent);
+        let mut best_insertion_info: Option<(usize, usize, f64, (f64, f64))> = None; // (candidate_index_in_remaining, insertion_index_in_tour, cost, new_props)
+
+        for &candidate_idx in &candidate_indices_to_check {
+            let candidate = &remaining_candidates[candidate_idx];
+
+            if tour.is_empty() {
+                 if let Some((dist, ascent)) = calculate_tour_properties_from_segments(start_node, &[candidate.clone()], distance_matrix) {
+                    if dist <= target_distance {
+                         best_insertion_info = Some((candidate_idx, 0, dist, (dist, ascent)));
+                    }
                 }
+                continue;
             }
-            continue;
-        }
 
-        let mut best_insertion_idx = 0;
-        let mut min_cost = f64::INFINITY;
-        let mut best_new_props = (0.0, 0.0);
+            let mut best_insertion_for_this_candidate: Option<(usize, f64, (f64,f64))> = None;
 
-        for i in 0..=tour.len() {
-            let mut temp_tour = tour.clone();
-            temp_tour.insert(i, candidate.clone());
-            if let Some((new_dist, new_ascent)) =
-                calculate_tour_properties_from_segments(start_node, &temp_tour, &distance_matrix)
-            {
-                if new_dist <= target_distance {
-                    let cost = new_dist - current_properties.0;
-                    if cost < min_cost {
-                        min_cost = cost;
-                        best_insertion_idx = i;
-                        best_new_props = (new_dist, new_ascent);
+            for i in 0..=tour.len() {
+                let mut temp_tour = tour.clone();
+                temp_tour.insert(i, candidate.clone());
+                if let Some((new_dist, new_ascent)) = calculate_tour_properties_from_segments(start_node, &temp_tour, distance_matrix) {
+                    if new_dist <= target_distance {
+                        let cost = new_dist - current_properties.0;
+                        if cost < best_insertion_for_this_candidate.map_or(f64::INFINITY, |(_, c, _)| c) {
+                            best_insertion_for_this_candidate = Some((i, cost, (new_dist, new_ascent)));
+                        }
                     }
                 }
             }
+
+            if let Some((insertion_idx, cost, new_props)) = best_insertion_for_this_candidate {
+                if cost < best_insertion_info.map_or(f64::INFINITY, |(_, _, c, _)| c) {
+                    best_insertion_info = Some((candidate_idx, insertion_idx, cost, new_props));
+                }
+            }
         }
 
-        if min_cost != f64::INFINITY {
-            tour.insert(best_insertion_idx, candidate);
-            current_properties = best_new_props;
+        if let Some((candidate_idx_to_insert, insertion_idx, _, new_props)) = best_insertion_info {
+            let candidate = remaining_candidates.remove(candidate_idx_to_insert);
+            tour.insert(insertion_idx, candidate);
+            current_properties = new_props;
             bar.set_message(format!("Dist: {:.2}km, Ascent: {:.1}m", current_properties.0 / 1000.0, current_properties.1));
+        } else {
+            // No candidate from the M pool could be inserted.
+            // To prevent getting stuck in an infinite loop, we break.
+            println!("No insertable candidates found in this iteration. Finalizing tour.");
+            break;
         }
     }
     bar.finish();
@@ -184,7 +96,6 @@ pub fn generate_route(
     // Step 4: Reconstruct final path
     println!("\nReconstructing final route path...");
     let final_path_nodes = {
-        let immutable_graph: &RouteGraph = graph;
         // Create a set of discouraged reverse edges
         let discouraged_edges: HashSet<(NodeIndex, NodeIndex)> = tour
             .iter()
@@ -199,12 +110,12 @@ pub fn generate_route(
         for segment in &tour {
             path_bar.inc(1);
             if let Some((_, path)) = astar(
-                immutable_graph,
+                graph,
                 current_node,
                 |n| n == segment.start_node,
                 |e| {
                     if discouraged_edges.contains(&(e.source(), e.target())) {
-                        e.weight().distance * 4.0
+                        e.weight().distance * config.penalty_factor
                     } else {
                         e.weight().distance
                     }
@@ -222,12 +133,12 @@ pub fn generate_route(
 
         path_bar.inc(1);
         if let Some((_, path)) = astar(
-            immutable_graph,
+            graph,
             current_node,
             |n| n == start_node,
             |e| {
                 if discouraged_edges.contains(&(e.source(), e.target())) {
-                    e.weight().distance * 4.0
+                    e.weight().distance * config.penalty_factor
                 } else {
                     e.weight().distance
                 }
@@ -308,9 +219,40 @@ mod tests {
 
     #[test]
     fn test_new_generate_route_returns_a_route() {
-        let (mut graph, start_node) = create_test_graph();
-        let route = generate_route(&mut graph, start_node, 10000.0, 100);
-        assert!(route.is_some());
+        let (graph, start_node) = create_test_graph();
+        let n2 = graph.node_indices().nth(1).unwrap();
+        let n3 = graph.node_indices().nth(2).unwrap();
+        let n4 = graph.node_indices().nth(3).unwrap();
+
+        let top_candidates = vec![
+             CandidateSegment { start_node: n2, end_node: n3, distance: 1000.0, ascent: 20.0 },
+             CandidateSegment { start_node: n3, end_node: n4, distance: 1000.0, ascent: 30.0 },
+        ];
+
+        let mut key_nodes: HashSet<NodeIndex> = top_candidates.iter().flat_map(|s| [s.start_node, s.end_node]).collect();
+        key_nodes.insert(start_node);
+        let key_nodes_vec: Vec<NodeIndex> = key_nodes.into_iter().collect();
+
+        let mut distance_matrix = HashMap::new();
+        for &from_node in &key_nodes_vec {
+            let shortest_paths = dijkstra(&graph, from_node, None, |e| e.weight().distance);
+            for &to_node in &key_nodes_vec {
+                if let Some(distance) = shortest_paths.get(&to_node) {
+                    distance_matrix.insert((from_node, to_node), *distance);
+                }
+            }
+        }
+
+        let config = AlgorithmConfig {
+            n_candidate_segments: 500,
+            search_radius_divisor: 4.0,
+            k_top_candidates_to_consider: 2,
+            m_candidates_to_evaluate: 2,
+            penalty_factor: 4.0,
+        };
+
+        let route = generate_route(&graph, start_node, 10000.0, &top_candidates, &distance_matrix, &config);
+        assert!(route.is_some(), "generate_route should have returned a route");
         let route_path = route.unwrap();
         assert!(!route_path.is_empty());
         let total_dist: f64 = route_path.iter().map(|e| e.distance).sum();

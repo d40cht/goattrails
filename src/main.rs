@@ -1,16 +1,18 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use geo::prelude::*;
 use geo::{Point as GeoPoint, Haversine};
+use indicatif::{ProgressBar, ProgressStyle};
 use ndarray::Array2;
 use osmpbf::{Element, ElementReader};
+use petgraph::algo::dijkstra;
 use petgraph::graph::{Graph, NodeIndex};
+use petgraph::visit::EdgeRef;
 use std::error::Error;
 use std::fs;
 use std::fs::File;
 use std::io::Read;
 use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
-use petgraph::prelude::*;
 use clap::Parser;
 use serde::Deserialize;
 
@@ -34,8 +36,16 @@ struct Args {
 struct GlobalConfig {
     osm_path: String,
     srtm_path: String,
-    algorithm_iterations: usize,
     map_offset_scale: Option<f64>,
+}
+
+#[derive(Deserialize, Clone, Copy)]
+pub struct AlgorithmConfig {
+    pub n_candidate_segments: usize,
+    pub search_radius_divisor: f64,
+    pub k_top_candidates_to_consider: usize,
+    pub m_candidates_to_evaluate: usize,
+    pub penalty_factor: f64,
 }
 
 #[derive(Deserialize)]
@@ -49,6 +59,7 @@ struct RouteConfig {
 #[derive(Deserialize)]
 struct Config {
     global: GlobalConfig,
+    algorithm: AlgorithmConfig,
     routes: HashMap<String, RouteConfig>,
 }
 
@@ -354,6 +365,14 @@ fn find_nearest_node(graph: &RouteGraph, point: &Point) -> Option<NodeIndex> {
     })
 }
 
+#[derive(Debug, Clone)]
+pub struct CandidateSegment {
+    pub start_node: NodeIndex,
+    pub end_node: NodeIndex,
+    pub distance: f64,
+    pub ascent: f64,
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     println!("Loading config from: {}", args.config);
@@ -369,37 +388,120 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("Using configured start point: ({:.4}, {:.4})", start_point.lat, start_point.lon);
 
         if let Some(start_node) = find_nearest_node(&graph, &start_point) {
-            println!("Found nearest graph node to start route generation.");
+            println!("Found nearest graph node. Identifying candidate segments...");
+            const MIN_ASCENT_METERS: f64 = 5.0; // TODO: Move to config? For now, keep as is.
+
+            let start_point_coords = graph.node_weight(start_node).unwrap();
+            let start_point_geo = GeoPoint::new(start_point_coords.lon, start_point_coords.lat);
+            let search_radius = (route_config.target_distance_km * 1000.0) / config.algorithm.search_radius_divisor;
+
+            let mut candidate_segments_with_value: Vec<_> = graph
+                .edge_references()
+                .filter_map(|edge| {
+                    let weight = edge.weight();
+                    if weight.distance == 0.0 { return None; }
+                    let source_node_coords = graph.node_weight(edge.source()).unwrap();
+                    let distance_from_start = Haversine.distance(start_point_geo, GeoPoint::new(source_node_coords.lon, source_node_coords.lat));
+
+                    if distance_from_start > search_radius || weight.ascent < MIN_ASCENT_METERS { return None; }
+
+                    Some((
+                        CandidateSegment {
+                            start_node: edge.source(),
+                            end_node: edge.target(),
+                            distance: weight.distance,
+                            ascent: weight.ascent,
+                        },
+                        weight.ascent / weight.distance,
+                    ))
+                })
+                .collect();
+
+            candidate_segments_with_value.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let top_candidates: Vec<CandidateSegment> = candidate_segments_with_value.into_iter().map(|(seg, _)| seg).take(config.algorithm.n_candidate_segments).collect();
+
+            if top_candidates.is_empty() {
+                eprintln!("No suitable candidate segments found within the search radius for route {}.", route_name);
+                continue;
+            }
+            println!("Identified {} candidate segments. Applying penalties for APSP calculation...", top_candidates.len());
+
+            for candidate in &top_candidates {
+                // Penalize the forward edge
+                if let Some(edge_index) = graph.find_edge(candidate.start_node, candidate.end_node) {
+                    graph[edge_index].weighted_distance = graph[edge_index].distance * config.algorithm.penalty_factor;
+                }
+                // Penalize the reverse edge
+                if let Some(edge_index) = graph.find_edge(candidate.end_node, candidate.start_node) {
+                    graph[edge_index].weighted_distance = graph[edge_index].distance * config.algorithm.penalty_factor;
+                }
+            }
+
+            let distance_matrix = {
+                println!("\nPre-computing shortest paths between key nodes...");
+                let mut key_nodes: HashSet<NodeIndex> = top_candidates.iter().flat_map(|s| [s.start_node, s.end_node]).collect();
+                key_nodes.insert(start_node);
+                let key_nodes_vec: Vec<NodeIndex> = key_nodes.into_iter().collect();
+
+                let mut distance_matrix = HashMap::new();
+                let bar = ProgressBar::new(key_nodes_vec.len() as u64);
+                bar.set_style(ProgressStyle::default_bar().template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})").unwrap().progress_chars("#>-"));
+
+                let immutable_graph: &RouteGraph = &graph;
+                for &from_node in &key_nodes_vec {
+                    bar.inc(1);
+                    let shortest_paths = dijkstra(immutable_graph, from_node, None, |e| e.weight().weighted_distance);
+                    for &to_node in &key_nodes_vec {
+                        if let Some(distance) = shortest_paths.get(&to_node) {
+                            distance_matrix.insert((from_node, to_node), *distance);
+                        }
+                    }
+                }
+                bar.finish_with_message("APSP calculation complete.");
+                println!("Distance matrix has {} entries.", distance_matrix.len());
+                distance_matrix
+            };
+
+            for candidate in &top_candidates {
+                // Reset the forward edge
+                if let Some(edge_index) = graph.find_edge(candidate.start_node, candidate.end_node) {
+                    graph[edge_index].weighted_distance = graph[edge_index].distance;
+                }
+                // Reset the reverse edge
+                if let Some(edge_index) = graph.find_edge(candidate.end_node, candidate.start_node) {
+                    graph[edge_index].weighted_distance = graph[edge_index].distance;
+                }
+            }
 
             let mut generated_routes = Vec::new();
             for i in 0..route_config.num_candidate_routes {
                 println!("\n--- Generating Route Candidate {}/{} for {} ---", i + 1, route_config.num_candidate_routes, route_name);
                 if let Some(route) = route_generator::generate_route(
-                    &mut graph,
+                    &graph,
                     start_node,
                     route_config.target_distance_km * 1000.0,
-                    config.global.algorithm_iterations,
+                    &top_candidates,
+                    &distance_matrix,
+                    &config.algorithm,
                 ) {
                     generated_routes.push(route);
                 } else {
-                    eprintln!("Failed to generate a route candidate after {} iterations.", config.global.algorithm_iterations);
+                    eprintln!("Failed to generate a route candidate.");
                 }
             }
 
             if generated_routes.is_empty() {
                 eprintln!("No routes were generated for {}.", route_name);
-                continue; // Skip to the next route
+                continue;
             }
 
             println!("\n--- All routes generated for {}. Ranking by ascent... ---", route_name);
-
             generated_routes.sort_by(|a, b| {
                 let a_ascent: f64 = a.iter().map(|e| e.ascent).sum();
                 let b_ascent: f64 = b.iter().map(|e| e.ascent).sum();
                 b_ascent.partial_cmp(&a_ascent).unwrap_or(std::cmp::Ordering::Equal)
             });
 
-            // The number of routes to display is now the number of candidates generated
             let top_routes = generated_routes;
 
             println!("\n--- Top {} Routes for {} ---", top_routes.len(), route_name);

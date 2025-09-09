@@ -2,8 +2,15 @@
 [global]
 osm_path = "data/oxfordshire-250907.osm.pbf"
 srtm_path = "data/oxfordshire_ish.SRTMGL1.tif"
-algorithm_iterations = 1000
 map_offset_scale = 0.000060
+
+# Global configuration for the GoatTrails route generator
+[algorithm]
+n_candidate_segments = 500
+search_radius_divisor = 4.0
+k_top_candidates_to_consider = 5
+m_candidates_to_evaluate = 3
+penalty_factor = 4.0
 
 # Defines one or more route-finding tasks to run.
 # Each task has a unique name (e.g., "wytham", "shotover") which will be used in the output filename.
