@@ -1,7 +1,9 @@
 # Global configuration for the GoatTrails route generator
 [global]
 osm_path = "data/oxfordshire-250907.osm.pbf"
-srtm_path = "data/oxfordshire_ish.SRTMGL1.tif"
+#srtm_path = "data/oxfordshire_ish.SRTMGL1.tif"
+# Downloaded from CGIAR: https://srtm.csi.cgiar.org/download
+srtm_path = "data/srtm_36_02.tif"
 map_offset_scale = 0.000060
 
 [algorithm]
