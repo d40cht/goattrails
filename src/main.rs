@@ -344,8 +344,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut generated_routes = Vec::new();
         for i in 0..config.route_candidates_to_generate {
             println!("\n--- Generating Route Candidate {}/{} ---", i + 1, config.route_candidates_to_generate);
-            if let Some(route) = route_generator::generate_route(&graph, start_node, config.target_distance_km * 1000.0, config.algorithm_iterations) {
-                generated_routes.push(route);
+            if let Some((_nodes, edges)) = route_generator::generate_route(&graph, start_node, config.target_distance_km * 1000.0, config.algorithm_iterations) {
+                generated_routes.push(edges);
             } else {
                 eprintln!("Failed to generate a route candidate after {} iterations.", config.algorithm_iterations);
             }
