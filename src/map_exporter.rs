@@ -144,12 +144,11 @@ fn get_point_at_ratio(path: &[Point], ratio: f64) -> Option<Point> {
 }
 
 // Helper function to offset a path for visualizing overlapping routes
-fn offset_path(path: &[Point], pass_num: u32, total_passes: u32) -> Vec<Point> {
+fn offset_path(path: &[Point], pass_num: u32, total_passes: u32, offset_scale: f64) -> Vec<Point> {
     if total_passes <= 1 {
         return path.to_vec();
     }
     // This calculation centers the lines around the original path
-    let offset_scale = 0.000015; // Small offset in lat/lon degrees
     let shift = (pass_num as f64 - (total_passes as f64 - 1.0) / 2.0) * offset_scale;
 
     if path.len() < 2 {
@@ -182,7 +181,7 @@ fn offset_path(path: &[Point], pass_num: u32, total_passes: u32) -> Vec<Point> {
     }).collect()
 }
 
-pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str) -> String {
+pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64) -> String {
     let colors = ["blue", "red", "green", "purple", "orange", "darkred", "lightred", "darkblue", "cadetblue"];
 
     // Count all segment occurrences to know the total passes for centering the offset
@@ -205,7 +204,7 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str) -> String {
             let pass_num = *segment_pass_num_tracker.entry(key).or_insert(0);
             segment_pass_num_tracker.insert(key, pass_num + 1);
 
-            let offset_path_points = offset_path(&segment.path, pass_num, total_passes);
+            let offset_path_points = offset_path(&segment.path, pass_num, total_passes, offset_scale);
 
             let js_points: Vec<String> = offset_path_points
                 .iter()

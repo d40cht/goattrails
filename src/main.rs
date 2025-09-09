@@ -30,6 +30,7 @@ struct Config {
     route_candidates_to_generate: usize,
     top_routes_to_display: usize,
     start_point: Option<PointConfig>,
+    map_offset_scale: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -398,7 +399,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         fs::create_dir_all("vis")?;
         let map_title = "Top Generated Routes";
-        let html_content = map_exporter::export_route_map(&top_routes, map_title);
+        let offset_scale = config.map_offset_scale.unwrap_or(0.000060);
+        let html_content = map_exporter::export_route_map(&top_routes, map_title, offset_scale);
         let filename = "vis/final_route.html";
         fs::write(filename, html_content)?;
         println!("-> Saved top {} routes to {}", top_routes.len(), filename);
