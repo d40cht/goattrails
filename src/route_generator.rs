@@ -11,7 +11,8 @@ pub fn generate_route(
     start_node: NodeIndex,
     target_distance: f64,
     top_candidates: &[CandidateSegment],
-    distance_matrix: &HashMap<(NodeIndex, NodeIndex), f64>,
+    actual_distance_matrix: &HashMap<(NodeIndex, NodeIndex), f64>,
+    cost_matrix: &HashMap<(NodeIndex, NodeIndex), f64>,
     config: &AlgorithmConfig,
 ) -> Option<Vec<EdgeData>> {
     println!("Starting route generation with greedy insertion heuristic...");
@@ -42,9 +43,11 @@ pub fn generate_route(
             let candidate = &remaining_candidates[candidate_idx];
 
             if tour.is_empty() {
-                 if let Some((dist, ascent)) = calculate_tour_properties_from_segments(start_node, &[candidate.clone()], distance_matrix) {
+                 if let Some((dist, ascent)) = calculate_tour_properties_from_segments(start_node, &[candidate.clone()], actual_distance_matrix) {
                     if dist <= target_distance {
-                         best_insertion_info = Some((candidate_idx, 0, dist, (dist, ascent)));
+                        if let Some((cost, _)) = calculate_tour_properties_from_segments(start_node, &[candidate.clone()], cost_matrix) {
+                            best_insertion_info = Some((candidate_idx, 0, cost, (dist, ascent)));
+                        }
                     }
                 }
                 continue;
@@ -55,11 +58,15 @@ pub fn generate_route(
             for i in 0..=tour.len() {
                 let mut temp_tour = tour.clone();
                 temp_tour.insert(i, candidate.clone());
-                if let Some((new_dist, new_ascent)) = calculate_tour_properties_from_segments(start_node, &temp_tour, distance_matrix) {
+
+                if let Some((new_dist, new_ascent)) = calculate_tour_properties_from_segments(start_node, &temp_tour, actual_distance_matrix) {
                     if new_dist <= target_distance {
-                        let cost = new_dist - current_properties.0;
-                        if cost < best_insertion_for_this_candidate.map_or(f64::INFINITY, |(_, c, _)| c) {
-                            best_insertion_for_this_candidate = Some((i, cost, (new_dist, new_ascent)));
+                        if let Some((new_cost, _)) = calculate_tour_properties_from_segments(start_node, &temp_tour, cost_matrix) {
+                            let (current_cost, _) = calculate_tour_properties_from_segments(start_node, &tour, cost_matrix).unwrap_or((0.0, 0.0));
+                            let cost = new_cost - current_cost;
+                            if cost < best_insertion_for_this_candidate.map_or(f64::INFINITY, |(_, c, _)| c) {
+                                best_insertion_for_this_candidate = Some((i, cost, (new_dist, new_ascent)));
+                            }
                         }
                     }
                 }
@@ -161,7 +168,7 @@ pub fn generate_route(
 fn calculate_tour_properties_from_segments(
     start_node: NodeIndex,
     tour: &[CandidateSegment],
-    distance_matrix: &HashMap<(NodeIndex, NodeIndex), f64>,
+    matrix: &HashMap<(NodeIndex, NodeIndex), f64>,
 ) -> Option<(f64, f64)> {
     if tour.is_empty() { return Some((0.0, 0.0)); }
     let mut total_distance = 0.0;
@@ -169,12 +176,12 @@ fn calculate_tour_properties_from_segments(
     let mut current_node = start_node;
 
     for segment in tour {
-        total_distance += distance_matrix.get(&(current_node, segment.start_node))?;
+        total_distance += matrix.get(&(current_node, segment.start_node))?;
         total_distance += segment.distance;
         total_ascent += segment.ascent;
         current_node = segment.end_node;
     }
-    total_distance += distance_matrix.get(&(current_node, start_node))?;
+    total_distance += matrix.get(&(current_node, start_node))?;
     Some((total_distance, total_ascent))
 }
 
@@ -196,6 +203,7 @@ mod tests {
     use super::*;
     use crate::{Point, EdgeData, RouteGraph};
     use petgraph::graph::NodeIndex;
+    use petgraph::algo::dijkstra;
 
     fn create_test_graph() -> (RouteGraph, NodeIndex) {
         let mut graph = RouteGraph::new();
@@ -233,15 +241,19 @@ mod tests {
         key_nodes.insert(start_node);
         let key_nodes_vec: Vec<NodeIndex> = key_nodes.into_iter().collect();
 
-        let mut distance_matrix = HashMap::new();
+        let mut actual_distance_matrix = HashMap::new();
         for &from_node in &key_nodes_vec {
             let shortest_paths = dijkstra(&graph, from_node, None, |e| e.weight().distance);
             for &to_node in &key_nodes_vec {
                 if let Some(distance) = shortest_paths.get(&to_node) {
-                    distance_matrix.insert((from_node, to_node), *distance);
+                    actual_distance_matrix.insert((from_node, to_node), *distance);
                 }
             }
         }
+
+        // For the test, we'll just make the cost matrix a clone of the actual one,
+        // as we are not testing the penalty logic here, just the route generation.
+        let cost_matrix = actual_distance_matrix.clone();
 
         let config = AlgorithmConfig {
             n_candidate_segments: 500,
@@ -251,7 +263,7 @@ mod tests {
             penalty_factor: 4.0,
         };
 
-        let route = generate_route(&graph, start_node, 10000.0, &top_candidates, &distance_matrix, &config);
+        let route = generate_route(&graph, start_node, 10000.0, &top_candidates, &actual_distance_matrix, &cost_matrix, &config);
         assert!(route.is_some(), "generate_route should have returned a route");
         let route_path = route.unwrap();
         assert!(!route_path.is_empty());
