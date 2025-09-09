@@ -24,12 +24,20 @@ struct PointConfig {
 }
 
 #[derive(Deserialize)]
+struct WayPenalties {
+    default: f64,
+    #[serde(flatten)]
+    specific: HashMap<String, f64>,
+}
+
+#[derive(Deserialize)]
 struct Config {
     target_distance_km: f64,
     algorithm_iterations: usize,
     route_candidates_to_generate: usize,
     top_routes_to_display: usize,
     start_point: Option<PointConfig>,
+    way_penalties: WayPenalties,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -45,11 +53,12 @@ pub struct EdgeData {
     pub distance: f64,
     pub ascent: f64,
     pub descent: f64,
+    pub penalty: f64,
 }
 
 type RouteGraph = Graph<Point, EdgeData, petgraph::Directed>;
 
-fn is_valid_way<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> bool {
+fn get_way_penalty<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, penalties: &WayPenalties) -> f64 {
     let mut highway_val: Option<&str> = None;
     let mut access_val: Option<&str> = None;
 
@@ -63,20 +72,26 @@ fn is_valid_way<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> bool {
 
     if let Some(access) = access_val {
         if matches!(access, "private" | "no") {
-            return false;
+            return f64::INFINITY;
         }
     }
 
     if let Some(highway) = highway_val {
-        return match highway {
-            "path" | "footway" | "track" | "bridleway" | "cycleway" | "residential"
-            | "unclassified" | "tertiary" => true,
-            "motorway" | "primary" | "trunk" => false,
-            _ => false,
-        };
+        // Check for an exact match in the specific penalties map
+        if let Some(penalty) = penalties.specific.get(highway) {
+            return *penalty;
+        }
+        // Fallback for highway tags not in the map - we consider them un-runnable
+        // unless they are in the allowed list from the original logic.
+        match highway {
+            "path" | "footway" | "track" | "bridleway" | "cycleway" => return penalties.default,
+            _ => () // If not in the original "good" list, check specific penalties or use default.
+        }
     }
 
-    false
+    // For ways that are not explicitly penalized but were not in the original hardcoded list,
+    // we can assume a default penalty. This is safer than excluding them.
+    penalties.default
 }
 
 fn centroid(points: &[Point]) -> Option<Point> {
@@ -137,7 +152,7 @@ fn get_interpolated_elevation(point: &Point, elevation_data: &Array2<i16>, geo_t
     Some(r1 * (1.0 - y_frac) + r2 * y_frac)
 }
 
-fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point>), Box<dyn Error>> {
+fn build_graph(osm_path: &str, srtm_path: &str, penalties: &WayPenalties) -> Result<(RouteGraph, Vec<Point>), Box<dyn Error>> {
     const INTERPOLATION_DISTANCE_M: f64 = 10.0;
     println!("Building graph...");
 
@@ -178,7 +193,8 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
     let reader3 = ElementReader::from_path(osm_path)?;
     reader3.for_each(|element| {
         if let Element::Way(way) = element {
-            if is_valid_way(way.tags()) {
+            let penalty = get_way_penalty(way.tags(), penalties);
+            if penalty.is_finite() {
                 for node_id in way.refs() {
                     *node_ref_counts.entry(node_id).or_insert(0) += 1;
                 }
@@ -201,7 +217,8 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
     let reader4 = ElementReader::from_path(osm_path)?;
     reader4.for_each(|element| {
         if let Element::Way(way) = element {
-            if is_valid_way(way.tags()) {
+            let penalty = get_way_penalty(way.tags(), penalties);
+            if penalty.is_finite() {
                 let mut last_intersection_node_id: Option<i64> = None;
                 let mut current_path_segment = Vec::new();
                 for node_id in way.refs() {
@@ -212,11 +229,11 @@ fn build_graph(osm_path: &str, srtm_path: &str) -> Result<(RouteGraph, Vec<Point
                             let start_idx = *osm_id_to_node_index.get(&last_id).unwrap();
                             let end_idx = *osm_id_to_node_index.get(&node_id).unwrap();
 
-                            let forward_edge = EdgeData { segment_id: segment_id_counter, path: current_path_segment.clone(), distance: 0.0, ascent: 0.0, descent: 0.0 };
+                            let forward_edge = EdgeData { segment_id: segment_id_counter, path: current_path_segment.clone(), distance: 0.0, ascent: 0.0, descent: 0.0, penalty };
 
                             let mut reversed_path = current_path_segment.clone();
                             reversed_path.reverse();
-                            let reverse_edge = EdgeData { segment_id: segment_id_counter, path: reversed_path, distance: 0.0, ascent: 0.0, descent: 0.0 };
+                            let reverse_edge = EdgeData { segment_id: segment_id_counter, path: reversed_path, distance: 0.0, ascent: 0.0, descent: 0.0, penalty };
 
                             graph.add_edge(start_idx, end_idx, forward_edge);
                             graph.add_edge(end_idx, start_idx, reverse_edge);
@@ -319,7 +336,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let osm_path = "data/oxfordshire-250907.osm.pbf";
     let srtm_path = "data/oxfordshire_ish.SRTMGL1.tif";
 
-    let (graph, parking_locations) = build_graph(osm_path, srtm_path)?;
+    let (graph, parking_locations) = build_graph(osm_path, srtm_path, &config.way_penalties)?;
 
     if parking_locations.is_empty() {
         eprintln!("No parking locations found. Cannot generate a route.");

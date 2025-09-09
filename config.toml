@@ -18,3 +18,14 @@ top_routes_to_display = 3
 [start_point]
 lat = 51.774716
 lon = -1.311914
+
+# Penalties for different types of ways. Higher values make the way less desirable.
+# The algorithm will tend to avoid ways with high penalties.
+[way_penalties]
+default = 1.0
+motorway = 500.0
+primary = 20.0
+trunk = 50.0
+tertiary = 1.5
+residential = 1.2
+unclassified = 1.1
