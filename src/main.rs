@@ -438,19 +438,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                     if distance_from_start > search_radius || weight.ascent < MIN_ASCENT_METERS { return None; }
 
                     Some((
-                        CandidateSegment {
-                            start_node: edge.source(),
-                            end_node: edge.target(),
-                            distance: weight.distance,
-                            ascent: weight.ascent,
-                        },
+                        weight.clone(),
                         weight.ascent / weight.distance,
                     ))
                 })
                 .collect();
 
             candidate_segments_with_value.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            let top_candidates: Vec<CandidateSegment> = candidate_segments_with_value.into_iter().map(|(seg, _)| seg).take(config.algorithm.n_candidate_segments).collect();
+            let top_candidates: Vec<EdgeData> = candidate_segments_with_value.into_iter().map(|(edge, _)| edge).take(config.algorithm.n_candidate_segments).collect();
 
             if top_candidates.is_empty() {
                 eprintln!("No suitable candidate segments found within the search radius for route {}.", route_name);
@@ -515,13 +510,21 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
 
             let mut generated_routes = Vec::new();
+
+            let candidate_segments_for_grasp: Vec<CandidateSegment> = top_candidates.iter().map(|edge| CandidateSegment {
+                start_node: edge.start_node,
+                end_node: edge.end_node,
+                distance: edge.distance,
+                ascent: edge.ascent,
+            }).collect();
+
             for i in 0..route_config.num_candidate_routes {
                 println!("\n--- Generating Route Candidate {}/{} for {} ---", i + 1, route_config.num_candidate_routes, route_name);
                 if let Some(route) = grasp_route_generator::generate_route_grasp(
                     &graph,
                     start_node,
                     route_config.target_distance_km * 1000.0,
-                    &top_candidates,
+                    &candidate_segments_for_grasp,
                     &actual_distance_matrix,
                     &cost_matrix,
                     &config.algorithm,
@@ -568,7 +571,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             let map_title = format!("Generated Routes for {}", route_name);
             let offset_scale = config.global.map_offset_scale.unwrap_or(0.000060);
-            let html_content = map_exporter::export_route_map(&top_routes, &map_title, offset_scale);
+            let html_content = map_exporter::export_route_map(&top_routes, &top_candidates, &map_title, offset_scale);
             let filename = format!("vis/{}.html", route_name);
             fs::write(&filename, html_content)?;
             println!("-> Saved top {} routes to {}", top_routes.len(), filename);
