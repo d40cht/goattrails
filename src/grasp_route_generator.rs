@@ -129,6 +129,20 @@ pub fn generate_route_grasp(
         current_properties.1
     );
 
+    // --- START: NEW SECTION ---
+    println!("\nPolishing route with swap optimization pass...");
+    let (initial_distance, _) =
+        calculate_tour_properties_from_segments(start_node, &tour, &actual_distance_matrix).unwrap();
+    tour = optimize_tour_with_swap(tour, &actual_distance_matrix, start_node);
+    let (final_distance, _) =
+        calculate_tour_properties_from_segments(start_node, &tour, &actual_distance_matrix).unwrap();
+    println!(
+        "Optimization reduced distance from {:.2}km to {:.2}km.",
+        initial_distance / 1000.0,
+        final_distance / 1000.0
+    );
+    // --- END: NEW SECTION ---
+
     println!("\nReconstructing final route path...");
     let final_path_nodes =
         reconstruct_final_path(graph, start_node, &tour, config.penalty_factor);
@@ -139,6 +153,37 @@ pub fn generate_route_grasp(
 
     println!("Final path has {} nodes.", final_path_nodes.len());
     Some(build_edge_data_path(graph, &final_path_nodes))
+}
+
+fn optimize_tour_with_swap(
+    mut tour: Vec<CandidateSegment>,
+    distance_matrix: &HashMap<(NodeIndex, NodeIndex), f64>,
+    start_node: NodeIndex,
+) -> Vec<CandidateSegment> {
+    let mut improved = true;
+    while improved {
+        improved = false;
+        let (mut best_distance, _) =
+            calculate_tour_properties_from_segments(start_node, &tour, distance_matrix).unwrap();
+
+        for i in 0..tour.len() {
+            for j in i + 1..tour.len() {
+                let mut new_tour = tour.clone();
+                new_tour.swap(i, j);
+
+                if let Some((new_distance, _)) =
+                    calculate_tour_properties_from_segments(start_node, &new_tour, distance_matrix)
+                {
+                    if new_distance < best_distance {
+                        tour = new_tour;
+                        best_distance = new_distance;
+                        improved = true;
+                    }
+                }
+            }
+        }
+    }
+    tour
 }
 
 fn find_cheapest_insertion(
