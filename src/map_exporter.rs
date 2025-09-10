@@ -84,7 +84,7 @@ fn offset_path(path: &[Point], pass_num: u32, total_passes: u32, offset_scale: f
     }).collect()
 }
 
-pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64) -> String {
+pub fn export_route_map(routes: &[Vec<EdgeData>], candidate_segments: &[EdgeData], title: &str, offset_scale: f64) -> String {
     let colors = ["blue", "red", "green", "purple", "orange", "darkred", "lightred", "darkblue", "cadetblue"];
 
     let mut directed_counts = HashMap::<(NodeIndex, NodeIndex), u32>::new();
@@ -152,6 +152,52 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
         overlay_map_entries.push(format!("\"{}\": {}", overlay_label.replace("'", "\\'"), route_group_var));
     }
 
+    // --- Add Ascent Segments Layer ---
+    let mut ascent_segment_layers = Vec::new();
+    for (i, segment) in candidate_segments.iter().enumerate() {
+        // We don't want to offset these, as they are the base segments.
+        let js_points: Vec<String> = segment.path.iter().map(|p| format!("[{}, {}]", p.lat, p.lon)).collect();
+        let js_coordinates = format!("[{}]", js_points.join(", "));
+
+        let popup_content = format!(
+            "<b>Ascent Segment Rank: #{}</b><br>Distance: {:.1}m<br>Ascent: {:.1}m",
+            i + 1, segment.distance, segment.ascent
+        ).replace("'", "\\'");
+
+        let polyline_str = format!(
+            "L.polyline({js_coordinates}, {{ color: 'black', weight: 4, dashArray: '5, 5' }}).bindPopup('{popup_content}')",
+            js_coordinates = js_coordinates, popup_content = popup_content
+        );
+
+        ascent_segment_layers.push(polyline_str.clone());
+        all_layers_for_bounds.push(polyline_str);
+
+        if let Some(marker_point) = get_point_at_ratio(&segment.path, 0.75) {
+             let marker_str = format!(
+                "L.circleMarker([{}, {}], {{ radius: 3, color: 'black', fillColor: 'black', fillOpacity: 1.0 }})",
+                marker_point.lat, marker_point.lon
+            );
+             ascent_segment_layers.push(marker_str.clone());
+             all_layers_for_bounds.push(marker_str);
+        }
+    }
+
+    if !ascent_segment_layers.is_empty() {
+        let ascent_group_var = "ascentSegmentsGroup";
+        layer_group_definitions.push(format!("var {} = L.layerGroup([{}]);", ascent_group_var, ascent_segment_layers.join(", ")));
+        overlay_map_entries.push(format!("\"Top Ascent Segments\": {}", ascent_group_var));
+    }
+
+    // --- Ascent Segment Layer ---
+    let mut ascent_layer_definition = String::new();
+    let ascent_group_var_name = if !ascent_segment_layers.is_empty() {
+        let var_name = "ascentSegmentsGroup";
+        ascent_layer_definition = format!("var {} = L.layerGroup([{}]);", var_name, ascent_segment_layers.join(", "));
+        var_name
+    } else {
+        "null"
+    };
+
     let script_logic = format!(
         r#"
     var map = L.map('map');
@@ -177,6 +223,7 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
     }};
 
     {layer_group_definitions}
+    {ascent_layer_definition}
 
     var overlayMaps = {{
         {overlay_map_entries}
@@ -194,6 +241,32 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
     var layerControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
 
     // --- Custom Controls Logic ---
+    var ascentLayer = {ascent_group_var_name};
+
+    if (ascentLayer) {{
+        var checkboxContainer = document.getElementById('overlay-checkboxes');
+        var checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.id = 'ascent-checkbox';
+        checkbox.checked = true;
+        checkboxContainer.appendChild(checkbox);
+
+        var label = document.createElement('label');
+        label.htmlFor = 'ascent-checkbox';
+        label.textContent = 'Top Ascent Segments';
+        checkboxContainer.appendChild(label);
+
+        map.addLayer(ascentLayer);
+
+        checkbox.addEventListener('change', function() {{
+            if (this.checked) {{
+                map.addLayer(ascentLayer);
+            }} else {{
+                map.removeLayer(ascentLayer);
+            }}
+        }});
+    }}
+
     var overlayKeys = Object.keys(overlayMaps);
 
     // 1. Bulk action buttons
@@ -250,13 +323,11 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
 
         radio.addEventListener('change', function() {{
             if (this.checked) {{
-                // First, remove all other overlay layers
                 overlayKeys.forEach(function(otherKey) {{
                     if (otherKey !== key) {{
                         map.removeLayer(overlayMaps[otherKey]);
                     }}
                 }});
-                // Then, add the selected layer
                 map.addLayer(overlayMaps[key]);
             }}
         }});
@@ -270,6 +341,8 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
     document.getElementById('show-all-btn').click();
 "#,
         layer_group_definitions = layer_group_definitions.join("\n    "),
+        ascent_layer_definition = ascent_layer_definition,
+        ascent_group_var_name = ascent_group_var_name,
         overlay_map_entries = overlay_map_entries.join(",\n        "),
         all_layers_for_bounds = all_layers_for_bounds.join(",\n")
     );
@@ -293,15 +366,33 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
             right: 10px;
             z-index: 1000;
             background: white;
-            padding: 5px;
+            padding: 10px;
             border: 1px solid #ccc;
             border-radius: 5px;
+            max-width: 280px;
         }}
         .custom-control-container .control-row {{
-            margin-bottom: 5px;
+            margin-bottom: 8px;
         }}
         .custom-control-container button {{
             margin-right: 5px;
+        }}
+        .custom-control-container label {{
+            font-weight: bold;
+            display: block;
+            margin-bottom: 4px;
+        }}
+        #route-radio-buttons label, #overlay-checkboxes label {{
+            font-weight: normal;
+            display: inline-block;
+            margin-left: 4px;
+            margin-right: 10px;
+        }}
+        hr {{
+            margin-top: 10px;
+            margin-bottom: 10px;
+            border: 0;
+            border-top: 1px solid #ccc;
         }}
     </style>
 </head>
@@ -310,13 +401,19 @@ pub fn export_route_map(routes: &[Vec<EdgeData>], title: &str, offset_scale: f64
 <div id="map"></div>
 <div class="custom-control-container leaflet-bar">
     <div class="control-row">
-        <label>Bulk Actions:</label>
+        <label>Overlays</label>
+        <div id="overlay-checkboxes"></div>
+    </div>
+    <hr>
+    <div class="control-row">
+        <label>Select Route</label>
+        <div id="route-radio-buttons"></div>
+    </div>
+    <hr>
+    <div class="control-row">
+        <label>Bulk Actions (Routes)</label>
         <button id="show-all-btn">Show All</button>
         <button id="hide-all-btn">Hide All</button>
-    </div>
-    <div class="control-row">
-        <label>Select Route:</label>
-        <div id="route-radio-buttons"></div>
     </div>
 </div>
 

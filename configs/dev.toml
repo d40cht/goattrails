@@ -1,9 +1,9 @@
 # Global configuration for the GoatTrails route generator
 [global]
 osm_path = "data/oxfordshire-250907.osm.pbf"
-#srtm_path = "data/oxfordshire_ish.SRTMGL1.tif"
+srtm_path = "data/oxfordshire_ish.SRTMGL1.tif"
 # Downloaded from CGIAR: https://srtm.csi.cgiar.org/download
-srtm_path = "data/srtm_36_02.tif"
+#srtm_path = "data/srtm_36_02.tif"
 map_offset_scale = 0.000060
 
 [algorithm]
@@ -18,10 +18,10 @@ penalty_factor = 4.0
 [routes]
 #stanton_harcourt = { lat = 51.750883, lon = -1.398796, target_distance_km = 30.0, num_candidate_routes = 8 }
 wytham = { lat = 51.774716, lon = -1.311914, target_distance_km = 12.0, num_candidate_routes = 8 }
-millwood_end = { lat = 51.828041, lon = -1.405427, target_distance_km = 20.0, num_candidate_routes = 8 }
-north_leigh_roman_villa = { lat = 51.832490, lon = -1.427606, target_distance_km = 20.0, num_candidate_routes = 8 }
-finstock = { lat = 51.847598, lon = -1.476966, target_distance_km = 20.0, num_candidate_routes = 8 }
-chadlington = { lat = 51.895559, lon = -1.525357, target_distance_km = 20.0, num_candidate_routes = 8 }
+#millwood_end = { lat = 51.828041, lon = -1.405427, target_distance_km = 20.0, num_candidate_routes = 8 }
+#north_leigh_roman_villa = { lat = 51.832490, lon = -1.427606, target_distance_km = 20.0, num_candidate_routes = 8 }
+#finstock = { lat = 51.847598, lon = -1.476966, target_distance_km = 20.0, num_candidate_routes = 8 }
+#chadlington = { lat = 51.895559, lon = -1.525357, target_distance_km = 20.0, num_candidate_routes = 8 }
 
 [highway_multipliers]
 trail = 1.0
